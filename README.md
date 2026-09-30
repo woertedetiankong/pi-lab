@@ -27,11 +27,22 @@
 
 ## 安装
 
+需要 Node.js 22.19+ 和 pi 0.87 或更新版本。
+
 ```bash
-pi install /path/to/pi-embe
-# 或只在本次运行中试用
-pi -e /path/to/pi-embe/index.ts
+# 从 GitHub 安装（写入 ~/.pi/agent/settings.json，所有项目都能用）
+pi install git:github.com/woertedetiankong/pi-lab
+
+# 或只装到当前项目（写入 .pi/settings.json）
+pi install git:github.com/woertedetiankong/pi-lab -l
+
+# 或不安装，只在这次运行中试用
+pi -e git:github.com/woertedetiankong/pi-lab
 ```
+
+安装后重启 pi，底部状态栏出现 `🔌` 即表示已加载。更新到最新版本：`pi update --extensions`。卸载：`pi remove git:github.com/woertedetiankong/pi-lab`。
+
+开发者从本地目录安装：`pi install /path/to/pi-lab`。
 
 ## 开发
 

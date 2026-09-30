@@ -1,0 +1,46 @@
+{
+  "name": "pi-lab",
+  "version": "0.1.0",
+  "description": "Embedded debugging for pi: a debug ledger that survives compaction, firmware-vs-source sync tracking, and folding of old hardware logs",
+  "type": "module",
+  "license": "MIT",
+  "files": [
+    "index.ts",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "embedded",
+    "firmware",
+    "debugging"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "engines": {
+    "node": ">=22.19"
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "node --test --disable-warning=ExperimentalWarning test/*.test.ts"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.87.1",
+    "@types/node": "^24.13.6",
+    "typebox": "^1.3.34",
+    "typescript": "5.9"
+  }
+}

@@ -1,0 +1,157 @@
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
+import { compare, describeFirmware, FLASH_ENTRY, type FirmwareState, firmwareStatus, type FlashRecord, isFirmwareFile, isFlashCommand, sourceState } from "./src/firmware.ts";
+import { foldLogs } from "./src/fold.ts";
+import { applyAction, emptyLedger, isEmpty, LEDGER_ENTRY, type Ledger, type LedgerAction, renderLedger } from "./src/ledger.ts";
+
+const NUDGE_TYPE = "pi-lab.stale-nudge";
+
+const GUIDELINES = [
+  "You are debugging embedded firmware on real hardware. Keep a debug ledger with the lab_ledger tool; it is shown to you below on every turn and survives context compaction.",
+  "- Record a fact only when the hardware showed it (serial output, a register read, a measurement), and say what showed it.",
+  "- Before testing an idea, add it as a hypothesis; when a test settles it, mark it ruled_out or confirmed with the evidence. Do not retest an idea the ledger already ruled out unless something relevant changed.",
+  "- What you see on the board only reflects your edits after they are flashed. Check the Firmware line before drawing conclusions from board behaviour.",
+  "- Older build, flash and serial logs are shortened in your context; re-run a command if you need its full output.",
+];
+
+export default function piLab(pi: ExtensionAPI): void {
+  let ledger: Ledger = emptyLedger();
+  let flash: FlashRecord | undefined;
+  let firmware: FirmwareState = { kind: "unknown" };
+  let editedFirmware = false, nudged = false;
+
+  const run = (cwd: string) => (command: string, args: string[]) => pi.exec(command, args, { cwd, timeout: 10_000 });
+
+  // Both records are snapshots in the session, so the active branch decides which ones apply.
+  const restore = (ctx: ExtensionContext) => {
+    ledger = emptyLedger();
+    flash = undefined;
+    for (const entry of ctx.sessionManager.getBranch()) {
+      if (entry.type !== "custom") continue;
+      if (entry.customType === LEDGER_ENTRY && entry.data) ledger = entry.data as Ledger;
+      if (entry.customType === FLASH_ENTRY && entry.data) flash = entry.data as FlashRecord;
+    }
+  };
+
+  const refresh = async (ctx: ExtensionContext) => {
+    firmware = compare(flash, await sourceState(run(ctx.cwd)).catch(() => undefined));
+    if (ctx.hasUI) ctx.ui.setStatus("pi-lab", firmwareStatus(firmware));
+  };
+
+  const recordFlash = async (ctx: ExtensionContext, command: string) => {
+    const now = await sourceState(run(ctx.cwd)).catch(() => undefined);
+    if (!now) return false;
+    flash = { at: Date.now(), command, ...now };
+    pi.appendEntry(FLASH_ENTRY, flash);
+    await refresh(ctx);
+    return true;
+  };
+
+  const update = (act: LedgerAction) => {
+    const result = applyAction(ledger, act);
+    if (result.changed) {
+      ledger = result.ledger;
+      pi.appendEntry(LEDGER_ENTRY, ledger);
+    }
+    return result;
+  };
+
+  pi.on("session_start", async (_event, ctx) => { restore(ctx); await refresh(ctx); });
+  pi.on("session_tree", async (_event, ctx) => { restore(ctx); await refresh(ctx); });
+
+  pi.on("agent_start", () => { editedFirmware = false; nudged = false; });
+
+  pi.on("tool_result", async (event, ctx) => {
+    if (event.toolName === "bash" && !event.isError && typeof event.input.command === "string" && isFlashCommand(event.input.command)) {
+      await recordFlash(ctx, event.input.command);
+      return;
+    }
+    const path = event.input.path;
+    if ((event.toolName === "edit" || event.toolName === "write") && typeof path === "string" && isFirmwareFile(path)) {
+      editedFirmware = true;
+      await refresh(ctx);
+    }
+  });
+
+  pi.on("context", event => {
+    const messages = foldLogs(event.messages);
+    return messages ? { messages } : undefined;
+  });
+
+  pi.on("before_agent_start", async (event, ctx) => {
+    await refresh(ctx);
+    const state = renderLedger(ledger, describeFirmware(firmware));
+    event.systemPromptOptions.sections.pi_lab = [...GUIDELINES, "", "Debug ledger:", state || "(empty: set the target and add what you know)"].join("\n");
+  });
+
+  // The agent changed firmware and is about to stop without flashing: whatever it concluded is untested on the board.
+  pi.on("agent_before_settle", async (event, ctx) => {
+    if (event.outcome !== "completed" || !editedFirmware || nudged || !flash) return;
+    await refresh(ctx);
+    if (firmware.kind !== "stale") return;
+    nudged = true;
+    return {
+      entries: [...event.entries, {
+        type: "custom_message", customType: NUDGE_TYPE, display: false,
+        content: "pi-lab: you edited firmware sources after the last flash, so the board still runs the old image. If your reply presents a fix as working, either flash and verify it on the board, or tell the user plainly that it is not yet tested on hardware. Do not repeat your reply otherwise.",
+      }],
+      continue: true,
+    };
+  });
+
+  pi.registerTool({
+    name: "lab_ledger",
+    label: "Lab Ledger",
+    description:
+      "Update the debug ledger for the hardware under test: set the target board, record facts the hardware has shown, and track hypotheses (open, testing, ruled_out, confirmed) with evidence. The ledger is shown to you every turn.",
+    promptSnippet: "Record hardware facts and debugging hypotheses in the debug ledger",
+    parameters: Type.Object({
+      action: Type.Union([
+        Type.Literal("set_target"), Type.Literal("add_fact"), Type.Literal("add_hypothesis"), Type.Literal("update"), Type.Literal("remove"),
+      ]),
+      text: Type.Optional(Type.String({ description: "Target description (e.g. 'STM32F407 on /dev/ttyUSB0'), fact or hypothesis" })),
+      id: Type.Optional(Type.String({ description: "Entry id for update / remove, e.g. H2 or F1" })),
+      status: Type.Optional(Type.Union([Type.Literal("open"), Type.Literal("testing"), Type.Literal("ruled_out"), Type.Literal("confirmed")])),
+      evidence: Type.Optional(Type.String({ description: "What the hardware showed: a log line, register value or measurement" })),
+      force: Type.Optional(Type.Boolean({ description: "Add a hypothesis even though it resembles one already settled" })),
+    }),
+    async execute(_id, params) {
+      const need = (value: string | undefined, name: string) => {
+        if (!value?.trim()) throw new Error(`${params.action} needs ${name}.`);
+        return value;
+      };
+      const act: LedgerAction =
+        params.action === "set_target" ? { action: "set_target", text: params.text ?? "" }
+        : params.action === "add_fact" ? { action: "add_fact", text: need(params.text, "text"), evidence: params.evidence }
+        : params.action === "add_hypothesis" ? { action: "add_hypothesis", text: need(params.text, "text"), force: params.force }
+        : params.action === "update" ? { action: "update", id: need(params.id, "id"), status: params.status, evidence: params.evidence }
+        : { action: "remove", id: need(params.id, "id") };
+      const result = update(act);
+      return { content: [{ type: "text", text: `${result.message}\n\n${renderLedger(ledger) || "(ledger empty)"}` }], details: { ledger } };
+    },
+  });
+
+  pi.registerCommand("lab", {
+    description: "Debug ledger and firmware sync: [show | flashed | target <text> | clear]",
+    getArgumentCompletions: prefix => ["show", "flashed", "target", "clear"].filter(s => s.startsWith(prefix)).map(s => ({ value: s, label: s })),
+    handler: async (args, ctx) => {
+      const [command = "show", ...rest] = args.trim().split(/\s+/);
+      if (command === "flashed") {
+        // For flashes done outside pi: an IDE, a GUI programmer, another terminal.
+        const ok = await recordFlash(ctx, "(marked by user)");
+        ctx.ui.notify(ok ? "Marked: the board runs the current sources." : "Not a git work tree: pi-lab cannot fingerprint the sources.", ok ? "info" : "warning");
+        return;
+      }
+      if (command === "target") {
+        update({ action: "set_target", text: rest.join(" ") });
+      } else if (command === "clear") {
+        if (ctx.hasUI && !(await ctx.ui.confirm("Clear the debug ledger?", "Facts and hypotheses on this branch will be cleared."))) return;
+        ledger = emptyLedger();
+        pi.appendEntry(LEDGER_ENTRY, ledger);
+      }
+      await refresh(ctx);
+      const text = renderLedger(ledger, describeFirmware(firmware));
+      ctx.ui.notify(isEmpty(ledger) && !text ? "Debug ledger is empty." : text, "info");
+    },
+  });
+}

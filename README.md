@@ -40,7 +40,7 @@ pi install git:github.com/woertedetiankong/pi-lab -l
 pi -e git:github.com/woertedetiankong/pi-lab
 ```
 
-安装后重启 pi，底部状态栏出现 `🔌` 即表示已加载。更新到最新版本：`pi update --extensions`。卸载：`pi remove git:github.com/woertedetiankong/pi-lab`。
+安装后重启 pi，在 git 仓库里的固件项目中，底部状态栏会出现 `🔌`（也可以输入 `/lab` 确认已加载）。更新到最新版本：`pi update --extensions`。卸载：`pi remove git:github.com/woertedetiankong/pi-lab`。
 
 开发者从本地目录安装：`pi install /path/to/pi-lab`。
 

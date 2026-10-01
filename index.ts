@@ -1,7 +1,11 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { Type } from "typebox";
 import { compare, describeFirmware, FLASH_ENTRY, type FirmwareState, firmwareStatus, type FlashRecord, isFirmwareFile, isFlashCommand, sourceState } from "./src/firmware.ts";
+import { usbIds } from "./src/board.ts";
 import { registerBoardTools } from "./src/board-tools.ts";
+import { BOARD_EVENT, type BoardEvent, type BoardPack, candidates, describePack, docsDir, ensureDocs, loadPacks, notePaths, projectBoard, setProjectBoard } from "./src/boards.ts";
 import { foldLogs } from "./src/fold.ts";
 import { checkCommand, checkWrite } from "./src/guard.ts";
 import { applyAction, emptyLedger, isEmpty, LEDGER_ENTRY, type Ledger, type LedgerAction, renderLedger } from "./src/ledger.ts";
@@ -70,9 +74,44 @@ export default function piLab(pi: ExtensionAPI): void {
     return result;
   };
 
-  registerBoardTools(pi, { flashed: recordFlash });
+  // The board pack in use: chosen per project with /lab board (or PI_LAB_BOARD).
+  const packs = loadPacks();
+  let pack: BoardPack | undefined;
+  let kbShelf: string | undefined;
+  const projectRoot = (cwd: string) => {
+    for (let dir = cwd; ; dir = dirname(dir)) {
+      if (existsSync(join(dir, ".git")) || existsSync(join(dir, ".pi", "lab.json"))) return dir;
+      if (dirname(dir) === dir) return cwd;
+    }
+  };
+  // pi-kb answers with the shelf it put the board's datasheets and notes on.
+  pi.events.on("pi-kb:board-shelf", data => { kbShelf = (data as { shelf?: string }).shelf; });
 
-  pi.on("session_start", async (_event, ctx) => { restore(ctx); await refresh(ctx); });
+  const usePack = async (ctx: ExtensionContext) => {
+    const id = process.env.PI_LAB_BOARD ?? projectBoard(projectRoot(ctx.cwd));
+    pack = packs.find(p => p.id === id);
+    kbShelf = undefined;
+    if (ctx.hasUI) ctx.ui.setStatus("pi-lab-board", pack ? `🔧 ${pack.name}` : undefined);
+    if (!pack) {
+      if (!id && ctx.hasUI) {
+        const found = candidates(packs, await usbIds(run(ctx.cwd)).catch(() => []));
+        if (found.length) ctx.ui.notify(`pi-lab: a board like ${found.map(p => p.name).join(" or ")} is connected. If that is it, run /lab board ${found[0]!.id} so pi knows its pins and quirks.`, "info");
+      }
+      return;
+    }
+    // Datasheets are downloaded once; pi-kb, when installed, puts them and the pack's notes on a shelf.
+    const fetchFile = async (url: string, file: string) => (await pi.exec("curl", ["-sSfL", "-o", file, url], { timeout: 120_000 })).code === 0;
+    const docs = await ensureDocs(pack, fetchFile).catch(() => []);
+    const event: BoardEvent = { name: pack.name, files: [...docs.map(d => ({ path: d.path, note: false })), ...notePaths(pack).map(path => ({ path, note: true }))] };
+    pi.events.emit(BOARD_EVENT, event);
+  };
+
+  registerBoardTools(pi, {
+    flashed: recordFlash,
+    downloadModeHint: () => pack?.buttons ? `The board is in download mode. ${pack.buttons}` : undefined,
+  });
+
+  pi.on("session_start", async (_event, ctx) => { restore(ctx); await refresh(ctx); void usePack(ctx); });
   pi.on("session_tree", async (_event, ctx) => { restore(ctx); await refresh(ctx); });
 
   pi.on("agent_start", () => { editedFirmware = false; nudged = false; sinceProgress = 0; steppedBack = false; });
@@ -126,7 +165,10 @@ export default function piLab(pi: ExtensionAPI): void {
   pi.on("before_agent_start", async (event, ctx) => {
     await refresh(ctx);
     const state = renderLedger(ledger, describeFirmware(firmware));
-    event.systemPromptOptions.sections.pi_lab = [...GUIDELINES, "", "Debug ledger:", state || "(empty: set the target and add what you know)"].join("\n");
+    const board = pack ? describePack(pack, kbShelf
+      ? `with this board's verified notes, on the knowledge base shelf "${kbShelf}" (kb_search)`
+      : `in ${docsDir(pack)}, and verified notes in ${join(pack.dir, "notes")}`) : undefined;
+    event.systemPromptOptions.sections.pi_lab = [...GUIDELINES, ...(board ? ["", board] : []), "", "Debug ledger:", state || "(empty: set the target and add what you know)"].join("\n");
   });
 
   // The agent changed firmware and is about to stop without flashing: whatever it concluded is untested on the board.
@@ -178,10 +220,29 @@ export default function piLab(pi: ExtensionAPI): void {
   });
 
   pi.registerCommand("lab", {
-    description: "Debug ledger and firmware sync: [show | flashed | target <text> | clear]",
-    getArgumentCompletions: prefix => ["show", "flashed", "target", "clear"].filter(s => s.startsWith(prefix)).map(s => ({ value: s, label: s })),
+    description: "Debug ledger, firmware sync and board: [show | flashed | target <text> | clear | board [id | none]]",
+    getArgumentCompletions: prefix => {
+      const [first, second] = prefix.split(/\s+/);
+      if (first === "board" && second !== undefined) return [...packs.map(p => p.id), "none"].filter(id => id.startsWith(second)).map(id => ({ value: `board ${id}`, label: id }));
+      return ["show", "flashed", "target", "clear", "board"].filter(s => s.startsWith(prefix)).map(s => ({ value: s, label: s }));
+    },
     handler: async (args, ctx) => {
       const [command = "show", ...rest] = args.trim().split(/\s+/);
+      if (command === "board") {
+        const id = rest[0];
+        const root = projectRoot(ctx.cwd);
+        if (!id) {
+          const connected = new Set(candidates(packs, await usbIds(run(ctx.cwd)).catch(() => [])).map(p => p.id));
+          const list = packs.map(p => `${p.id === pack?.id ? "●" : "○"} ${p.id}  ${p.name}${connected.has(p.id) ? "  (a matching device is connected)" : ""}`);
+          ctx.ui.notify([`Board for ${root}: ${pack?.name ?? "none"}`, ...list, "Choose with /lab board <id>, or /lab board none."].join("\n"), "info");
+          return;
+        }
+        if (id !== "none" && !packs.some(p => p.id === id)) { ctx.ui.notify(`No board pack "${id}". Known: ${packs.map(p => p.id).join(", ")}`, "warning"); return; }
+        setProjectBoard(root, id === "none" ? undefined : id);
+        await usePack(ctx);
+        ctx.ui.notify(pack ? `Board for this project: ${pack.name} (saved in .pi/lab.json).` : "No board for this project.", "info");
+        return;
+      }
       if (command === "flashed") {
         // For flashes done outside pi: an IDE, a GUI programmer, another terminal.
         const ok = await recordFlash(ctx, "(marked by user)");

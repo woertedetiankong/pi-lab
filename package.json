@@ -8,6 +8,7 @@
     "index.ts",
     "src",
     "assets",
+    "boards",
     "README.md",
     "LICENSE"
   ],

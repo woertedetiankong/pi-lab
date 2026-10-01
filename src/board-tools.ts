@@ -14,7 +14,11 @@ const SERIAL_FOLD = { keepRecent: 0, minLines: 150, head: 25, tail: 40, notable:
 
 const text = (t: string) => ({ content: [{ type: "text" as const, text: t }], details: undefined });
 
-export function registerBoardTools(pi: ExtensionAPI, hooks: { flashed: (ctx: ExtensionContext, command: string) => Promise<unknown> }): void {
+export function registerBoardTools(pi: ExtensionAPI, hooks: {
+  flashed: (ctx: ExtensionContext, command: string) => Promise<unknown>;
+  /** What to tell the model when the chip keeps booting into its download mode. */
+  downloadModeHint?: () => string | undefined;
+}): void {
   const run: Run = async (command, args, options) => {
     const r = await pi.exec(command, args, { cwd: options?.cwd, timeout: options?.timeout });
     return { stdout: r.stdout, stderr: r.stderr, code: r.code };
@@ -84,6 +88,9 @@ export function registerBoardTools(pi: ExtensionAPI, hooks: { flashed: (ctx: Ext
       const file = join(tmpdir(), "pi-lab", `serial-${new Date().toISOString().replace(/[:.]/g, "-")}.log`);
       mkdirSync(join(file, ".."), { recursive: true });
       writeFileSync(file, log);
+      if (/waiting for download/.test(log)) {
+        note += `\n[pi-lab: ${hooks.downloadModeHint?.() ?? "The chip booted into its download mode (boot strap held low), so the firmware did not run. Ask the user to reset the board normally."}]`;
+      }
       const shown = foldText(log, SERIAL_FOLD) ?? log;
       return text(`Serial log from ${port} (${params.reset === false ? "no reset" : "after reset"}, ${lines} lines, full log in ${file}):${note}\n${shown}`);
     },

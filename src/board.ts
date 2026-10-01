@@ -98,3 +98,30 @@ export function buildErrors(output: string, max = 20): string {
   const lines = output.split("\n").filter(l => /\berror\b|undefined reference|FAILED:/i.test(l) && !/^\s*ninja: build stopped/.test(l));
   return [...new Set(lines)].slice(0, max).join("\n");
 }
+
+/** USB vendor:product ids of connected devices, as "303a:1001". */
+export async function usbIds(run: Run): Promise<string[]> {
+  if (process.platform === "darwin") {
+    const r = await run("ioreg", ["-p", "IOUSB", "-l", "-w0"], { timeout: 10_000 }).catch(() => undefined);
+    return parseIoreg(r?.stdout ?? "");
+  }
+  const r = await run("sh", ["-c", "for d in /sys/bus/usb/devices/*; do [ -f $d/idVendor ] && echo $(cat $d/idVendor):$(cat $d/idProduct); done"], { timeout: 10_000 }).catch(() => undefined);
+  return [...new Set((r?.stdout ?? "").match(/\b[0-9a-f]{4}:[0-9a-f]{4}\b/g) ?? [])];
+}
+
+export function parseIoreg(text: string): string[] {
+  const ids: string[] = [];
+  let vendor: number | undefined, product: number | undefined;
+  for (const line of text.split("\n")) {
+    // Each device starts a "+-o" block; its properties come in any order.
+    if (line.includes("+-o ")) { vendor = product = undefined; continue; }
+    const v = line.match(/"idVendor" = (\d+)/), p = line.match(/"idProduct" = (\d+)/);
+    if (v) vendor = Number(v[1]);
+    if (p) product = Number(p[1]);
+    if (vendor !== undefined && product !== undefined) {
+      ids.push(`${vendor.toString(16).padStart(4, "0")}:${product.toString(16).padStart(4, "0")}`);
+      vendor = product = undefined;
+    }
+  }
+  return [...new Set(ids)];
+}

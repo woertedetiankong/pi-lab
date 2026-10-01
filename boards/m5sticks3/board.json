@@ -1,0 +1,47 @@
+{
+  "id": "m5sticks3",
+  "name": "M5StickS3",
+  "vendor": "M5Stack",
+  "url": "https://docs.m5stack.com/en/core/StickS3",
+  "chip": "ESP32-S3-PICO-1 (8MB flash, 8MB PSRAM)",
+  "match": { "usb": [{ "vid": "0x303a", "pid": "0x1001" }], "chip": "ESP32-S3-PICO-1" },
+  "console": "usb-serial-jtag",
+  "sources": {
+    "board": "measured on an M5StickS3 during pi-lab development",
+    "m5docs": "https://docs.m5stack.com/en/core/StickS3",
+    "m5unified": "https://github.com/m5stack/M5Unified (board_M5StickS3)"
+  },
+  "buses": [
+    {
+      "name": "internal I2C", "sda": 47, "scl": 48, "source": "board",
+      "devices": [
+        { "name": "BMI270 IMU", "address": "0x68", "source": "board", "note": "CHIP_ID 0x24. Reads all zeros until its 8 KB config file is uploaded with advanced power save off (see the BMI270 note)." },
+        { "name": "M5PM1 power management", "address": "0x6E", "source": "board", "note": "Power management chip. M5Unified drives the speaker amplifier enable through its GPIO3 and reads charging status on its GPIO0." }
+      ]
+    },
+    { "name": "external I2C (Grove / Hat)", "sda": 9, "scl": 10, "source": "m5unified" }
+  ],
+  "pins": [
+    { "function": "button KEY1", "gpio": 11, "source": "m5docs" },
+    { "function": "button KEY2", "gpio": 12, "source": "m5docs" },
+    { "function": "display ST7789P3 MOSI / SCK / RS / CS / RST / backlight", "gpio": "39 / 40 / 45 / 41 / 21 / 38", "source": "m5docs" },
+    { "function": "audio I2S MCLK / BCLK / LRCK / DOUT / DIN", "gpio": "18 / 17 / 15 / 14 / 16", "source": "m5docs" },
+    { "function": "IR transmit / receive", "gpio": "46 / 42", "source": "m5docs" }
+  ],
+  "buttons": "Side power button: single click powers on or resets; double click powers off; long press enters download mode (the chip then boots into the ROM loader every reset until you single-click).",
+  "quirks": [
+    "Opening its USB serial port with pyserial's defaults resets the chip, and into download mode: the OS raises DTR and RTS on open. Lower RTS before DTR (board_serial does).",
+    "An RTS reset right after flashing, or a firmware crash-and-reboot loop, can wedge the USB port: no output and esptool says 'No serial data received'. A USB re-enumeration recovers it (board_recover); otherwise unplug it.",
+    "If every reset prints 'boot:0x1 (DOWNLOAD...)' and 'waiting for download', the side button was long-pressed: ask the user to single-click it.",
+    "Console output is on the native USB-Serial/JTAG port (CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y); there is no USB-UART bridge."
+  ],
+  "docs": [
+    { "title": "BMI270 datasheet", "file": "BMI270-datasheet.pdf", "url": "https://www.bosch-sensortec.com/media/boschsensortec/downloads/datasheets/bst-bmi270-ds000.pdf" }
+  ],
+  "notes": [
+    "notes/m5sticks3-usb-serial-open-reset.md",
+    "notes/m5sticks3-usb-wedge.md",
+    "notes/m5sticks3-download-mode-button.md",
+    "notes/m5sticks3-bmi270-init.md"
+  ]
+}

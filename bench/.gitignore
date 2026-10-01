@@ -1,0 +1,3 @@
+results/*/*/transcript.jsonl
+results/*/*/sessions/
+__pycache__/

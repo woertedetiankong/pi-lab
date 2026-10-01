@@ -1,0 +1,19 @@
+{
+  "scenario": "boot-counter",
+  "agent": "pi-lab",
+  "model": "(default)",
+  "pass": true,
+  "detail": "boot counts across three resets: [1, 2, 3]",
+  "minutes": 6.6,
+  "exitCode": 0,
+  "toolCalls": 75,
+  "flashes": 5,
+  "serialCaptures": 9,
+  "ledgerCalls": 12,
+  "tokens": {
+    "input": 45241,
+    "output": 37486
+  },
+  "costUsd": 0.0734,
+  "finalText": "## Root cause\n\n`storage_init()` in `main/main.c` had a broken boolean condition:\n\n```c\nif (err == ESP_ERR_NVS_NO_FREE_PAGES || ESP_ERR_NVS_NEW_VERSION_FOUND) {\n```\n\nThe second operand is missing its `err ==`. `ESP_ERR_NVS_NEW_VERSION_FOUND` expands to the nonzero constant `(0x1100 + 0x10)`, so the right-hand side of `||` is *always true*. The preprocessed output confirmed it:\n\n```c\nif (err == (0x1100 + 0x0d) || (0x1100 + 0x10))   /* always true */\n```\n\nand `storage_init`'s disassembly calls `nvs_flash_erase()` unconditionally (no branch between `nvs_flash_init` and the erase).\n\nSo on **every boot** the app erased the whole NVS partition, re-initialised it (now empty), found no `boot_count`, printed `boot_count=1`, and saved `1` — then wiped it again on the next reset. The write itself was working perfectly (I dumped `0x9000..0xf000` and the NVS page, header CRC, entry table and item CRCs were all valid), which is why it looked like a persistence failure when it was actually a self-inflicted erase.\n\n## Fix\n\nAdded the missing comparison (one line, on the board, built and flashed):\n\n```c\nif (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {\n```\n\n`git diff` is exactly `1 insertion(+), 1 deletion(-)`; all temporary diagnostic logging was removed and the log format is untouched.\n\n## Verification on hardware\n\nFour consecutive resets (`python tools/serial_capture.py`), no re-flashing in between:\n\n```\nboot_count=2 ... saved boot_count=2\nboot_count=3 ... saved boot_count=3\nboot_count=4 ... saved boot_count=4\nboot_count=5 ... saved boot_count=5\n```\n\nThe `no boot count stored yet` message no longer appears, and the counter increments by one on each reset."
+}

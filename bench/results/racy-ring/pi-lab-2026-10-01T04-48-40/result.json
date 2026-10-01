@@ -1,0 +1,19 @@
+{
+  "scenario": "racy-ring",
+  "agent": "pi-lab",
+  "model": "(default)",
+  "pass": true,
+  "detail": "12033 samples intact and in order (1003/s), no drops",
+  "minutes": 3.8,
+  "exitCode": 0,
+  "toolCalls": 44,
+  "flashes": 4,
+  "serialCaptures": 5,
+  "ledgerCalls": 12,
+  "tokens": {
+    "input": 50974,
+    "output": 15789
+  },
+  "costUsd": 0.0396,
+  "finalText": "Done. The board runs the fixed image (ELF `246c397e3…`, matching `build/racy_ring.elf`), and `main/monitor.c` and `main/sample.h` are untouched.\n\n## Root cause\n\nThe SPSC ring buffer in `main/ring.c` published the producer index before the slot was written:\n\n```c\nuint32_t slot = head;\nhead = (slot + 1) % RB_SIZE;   /* consumer may now pop this slot... */\nslots[slot] = *s;              /* ...but it is still empty/being overwritten */\nslots[slot].crc = sample_crc(&slots[slot]);\n```\n\nThe producer lives in the high-priority `esp_timer` task pinned to CPU0; the monitor consumer runs on CPU1 (`main.c` pins it). They truly run in parallel, so the consumer could pop a slot mid-write and read a torn sample → `crc_err`, and the resulting sequence discontinuity → `gaps`. Baseline serial confirmed it: `ok≈770/s`, `crc_err`/`gaps` climbing ~175/s, not the required 0.\n\nTwo latent defects compounded it:\n- The full test `rb_count() > RB_SIZE - 1` is unreachable (count is always ≤ `RB_SIZE-1`), so overflow was never counted; when it happened the count aliased back to 0 and `head==tail` looked empty.\n- `RB_SIZE=64` holds only 63 entries, but the monitor blocks for 80 ms on the storage write → 80 samples arrive; the ring cannot absorb them.\n\nI proved both on hardware: with the ordering fixed but `RB_SIZE=64`, `dropped` climbed ~23/s and each drop produced a `gap`.\n\n## What I changed (only `main/ring.c`, `main/ring.h`)\n\n- **Publish-after-write with release/acquire ordering**: `rb_push` now writes the full slot (payload + CRC) before `__atomic_store_n(&head, ..., __ATOMIC_RELEASE)`. `rb_pop` acquire-loads `head`, copies the slot out, then release-stores `tail`. The index loads/stores and `dropped` use `__atomic_*` so compiler/CPU reordering and cross-core visibility are handled.\n- **Correct full detection**: `if (rb_count(h, t) >= RB_SIZE - 1) { dropped++; return false; }`.\n- **Ring sized for the stall**: `RB_SIZE` 64 → 256 (255 usable, comfortably above the 80-sample burst), so no drops.\n\nStorage write (80 ms) and the 1 kHz `esp_timer` period are unchanged.\n\n## Verification on board\n\n- Before: `stats ok=808 crc_err=195 gaps=195 dropped=0`, then ~770/s with `crc_err`/`gaps` ~175/s.\n- After (final image): 21 s of serial output, steady `ok≈1003/s` and `stats ... crc_err=0 gaps=0 dropped=0` on every report."
+}

@@ -1,0 +1,13 @@
+diff --git a/main/main.c b/main/main.c
+index b510c67..4ce02cb 100644
+--- a/main/main.c
++++ b/main/main.c
+@@ -27,6 +27,8 @@ static esp_err_t send_with_retry(const uint8_t *frame, size_t len)
+         if (err == ESP_OK) {
+             return ESP_OK;
+         }
++        /* link_send only takes ownership on success; free the encoded buffer on error or it leaks. */
++        free(pkt.data);
+         ESP_LOGW(TAG, "send failed (%s), retrying", esp_err_to_name(err));
+         retries++;
+     }

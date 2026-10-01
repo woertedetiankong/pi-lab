@@ -1,0 +1,19 @@
+{
+  "scenario": "leaky-uplink",
+  "agent": "pi",
+  "model": "(default)",
+  "pass": true,
+  "detail": "ran 20 s without crashing, 50 frames/s, free heap 391916 -> 391916",
+  "minutes": 3.4,
+  "exitCode": 0,
+  "toolCalls": 16,
+  "flashes": 2,
+  "serialCaptures": 2,
+  "ledgerCalls": 0,
+  "tokens": {
+    "input": 13478,
+    "output": 3734
+  },
+  "costUsd": 0.0091,
+  "finalText": "## Root cause\n\nA heap leak in the retry path of `send_with_retry()` in `main/main.c`.\n\nThe `link_send()` contract (documented in `main/link.h`) is: **on success the link takes ownership of `pkt.data` and frees it; on any error the caller keeps ownership.** The radio intentionally returns `ESP_ERR_TIMEOUT` on every 5th call (radio busy), and the code retries by allocating a fresh encoded buffer each attempt.\n\nOn the error branch the code never freed `pkt.data`, so every failed attempt leaked a `FRAME_SIZE + 8` = 4104-byte buffer. At 50 Hz with a ~20% failure rate that's ~40 KB/s of leaked heap. The `stats` line confirmed it: `heap_free` fell from 391916 → 340924 → 285960 → … ~55 KB per line. Once the heap runs dry, `encode_frame()` returns `NULL` and every send fails permanently.\n\n## Fix\n\nOne line in `main/main.c`: free the encoded buffer when `link_send()` does not take ownership.\n\n```c\nesp_err_t err = link_send(&pkt);\nif (err == ESP_OK) {\n    return ESP_OK;\n}\n/* link_send only takes ownership on success; free the encoded buffer on error or it leaks. */\nfree(pkt.data);\nESP_LOGW(TAG, \"send failed (%s), retrying\", esp_err_to_name(err));\nretries++;\n```\n\nNo changes to `link.c`/`link.h`, frame size, or the 50 Hz rate.\n\n## Verification on the board\n\nFlashed and ran for 120 s (~6000 frames at 50 Hz):\n\n- Before: `heap_free` dropped every stats line (391916 → 340924 → 285960 → …), then sends died.\n- After: `heap_free=391916` constant on every line, `sent` climbing, `retries` climbing, `failed=0`, `queue=0` — it keeps sending indefinitely."
+}

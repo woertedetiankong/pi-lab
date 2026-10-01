@@ -1,0 +1,13 @@
+diff --git a/main/main.c b/main/main.c
+index 192d042..6398f20 100644
+--- a/main/main.c
++++ b/main/main.c
+@@ -16,7 +16,7 @@ static esp_err_t storage_init(void)
+ {
+     esp_err_t err = nvs_flash_init();
+     /* A partition written by an older layout must be erased before it can be used again. */
+-    if (err == ESP_ERR_NVS_NO_FREE_PAGES || ESP_ERR_NVS_NEW_VERSION_FOUND) {
++    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+         ESP_ERROR_CHECK(nvs_flash_erase());
+         err = nvs_flash_init();
+     }

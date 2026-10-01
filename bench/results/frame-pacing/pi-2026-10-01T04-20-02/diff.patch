@@ -1,0 +1,41 @@
+diff --git a/main/main.c b/main/main.c
+index 8f246d2..c20d6b5 100644
+--- a/main/main.c
++++ b/main/main.c
+@@ -28,21 +28,28 @@ static void dsp_task(void *arg)
+ {
+     int frames = 0;
+     int64_t window = esp_timer_get_time();
++    TickType_t last_wake = xTaskGetTickCount();
++    const TickType_t period = pdMS_TO_TICKS(FRAME_PERIOD_MS);
+     for (;;) {
+-        int64_t start = esp_timer_get_time();
+         process_frame();
+         frames++;
+ 
+-        /* Sleep for the rest of the frame period, giving the CPU to other tasks. */
+-        int elapsed_ms = (int)((esp_timer_get_time() - start) / 1000);
+-        if (elapsed_ms < FRAME_PERIOD_MS) {
+-            vTaskDelay(pdMS_TO_TICKS(FRAME_PERIOD_MS - elapsed_ms));
+-        }
++        /* Keep a fixed cadence regardless of how long the work took.  Sleeping the
++         * leftover time is not safe here: with the 100 Hz FreeRTOS tick the leftover
++         * is 8 ms, pdMS_TO_TICKS(8) truncates to 0, and vTaskDelay(0) only yields to
++         * equal-priority tasks instead of blocking.  That starves IDLE0 (task WDT)
++         * and makes the loop free-run well above 50 fps. */
++        vTaskDelayUntil(&last_wake, period);
+ 
+         if (esp_timer_get_time() - window >= 1000000) {
+-            ESP_LOGI(TAG, "fps=%d", frames);
++            /* Report the true rate over the whole window: the loop wakes on 20 ms
++             * boundaries, so the window is ~1020 ms and a raw frame count would
++             * read 51 even though the rate is exactly 50 fps. */
++            int64_t elapsed = esp_timer_get_time() - window;
++            int fps = (int)(((int64_t)frames * 1000000 + elapsed / 2) / elapsed);
++            ESP_LOGI(TAG, "fps=%d", fps);
+             frames = 0;
+-            window = esp_timer_get_time();
++            window += elapsed;
+         }
+     }
+ }

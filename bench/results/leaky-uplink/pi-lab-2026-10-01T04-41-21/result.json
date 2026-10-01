@@ -1,0 +1,19 @@
+{
+  "scenario": "leaky-uplink",
+  "agent": "pi-lab",
+  "model": "(default)",
+  "pass": true,
+  "detail": "ran 20 s without crashing, 50 frames/s, free heap 391916 -> 391916",
+  "minutes": 2.2,
+  "exitCode": 0,
+  "toolCalls": 23,
+  "flashes": 2,
+  "serialCaptures": 3,
+  "ledgerCalls": 5,
+  "tokens": {
+    "input": 11587,
+    "output": 5201
+  },
+  "costUsd": 0.0105,
+  "finalText": "## Root cause\n\n`send_with_retry()` in `main/main.c` leaked the encoded frame on every failed send.\n\n`link.h` is explicit: the link takes ownership of `pkt.data` and frees it **only on `ESP_OK`**; on any error the caller keeps ownership. But the retry loop allocated a fresh `encode_frame()` buffer each attempt and, on `ESP_ERR_TIMEOUT`, simply looped — never freeing the previous buffer. Since the radio is busy every 5th call (~20% failures), the firmware leaked ~4 KB per failure, roughly 40 KB/s. The heap drained from ~392 KB to ~14 KB in a few seconds, after which `encode_frame()` could no longer allocate, `send_with_retry()` returned `ESP_ERR_NO_MEM` for every frame, and nothing was transmitted any more.\n\n## The fix\n\nIn `main/main.c`, free the buffer on the error path:\n\n```c\nesp_err_t err = link_send(&pkt);\nif (err == ESP_OK) {\n    return ESP_OK;\n}\n/* The link only takes ownership on ESP_OK; on error the caller must\n * free the buffer, otherwise every retry leaks an encoded frame. */\nfree(pkt.data);\nESP_LOGW(TAG, \"send failed (%s), retrying\", esp_err_to_name(err));\nretries++;\n```\n\nNo changes to `link.c`/`link.h`, the frame size, or the 50 Hz rate.\n\n## Verification on the board\n\n- **Before (original firmware):** `heap_free` fell `129524 → 74560 → 23056 → 14088` in ~7 s, then `sent` froze at 360 while `failed` climbed on every frame.\n- **After (fixed firmware), 45 s run:** reached `seq=2200` with `heap_free` constant at `391916` the entire time, `sent=2201`, `failed=0`, `retries` accumulating at the expected ~25% radio-busy rate. It keeps sending indefinitely."
+}

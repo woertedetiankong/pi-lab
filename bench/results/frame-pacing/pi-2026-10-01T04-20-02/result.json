@@ -1,0 +1,19 @@
+{
+  "scenario": "frame-pacing",
+  "agent": "pi",
+  "model": "(default)",
+  "pass": true,
+  "detail": "fps readings: [50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50]",
+  "minutes": 3.2,
+  "exitCode": 0,
+  "toolCalls": 21,
+  "flashes": 2,
+  "serialCaptures": 6,
+  "ledgerCalls": 0,
+  "tokens": {
+    "input": 12696,
+    "output": 15393
+  },
+  "costUsd": 0.0239,
+  "finalText": "Fixed and verified on the board.\n\n## Root cause\n\nThe board runs FreeRTOS at **100 Hz** (`CONFIG_FREERTOS_HZ=100`, i.e. a 10 ms tick). The task does ~12 ms of work, then sleeps the remainder of a 20 ms frame:\n\n```c\nint elapsed_ms = ...;                    /* 12 */\nvTaskDelay(pdMS_TO_TICKS(FRAME_PERIOD_MS - elapsed_ms));  /* pdMS_TO_TICKS(8) */\n```\n\n`pdMS_TO_TICKS(8)` = `8*100/1000` = **0**. `vTaskDelay(0)` does not block — it only yields to equal-priority tasks. The `dsp` task (priority 5, pinned to core 0) therefore never blocks, so `IDLE0` (priority 0) never runs → the task watchdog fires. It also free-runs at the work rate (~84 fps) instead of 50 fps.\n\n## Changes (`main/main.c`)\n\n1. **Replaced the truncated \"sleep the leftover\" logic with a fixed-rate wait**: `vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(FRAME_PERIOD_MS))`. The 20 ms period is an exact 2-tick interval at 100 Hz, so the loop keeps a steady 20 ms cadence and genuinely blocks ~8 ms per frame, letting `IDLE0` run and petting the watchdog. No change to `process_frame()` / `WORK_US`.\n2. **Made the `fps` report reflect the true rate**: since the loop wakes only on 20 ms tick boundaries, the counting window is ~1020 ms, so a raw frame count read `51`. It now computes frames per second from the actual window duration (rounded), which reads the real 50.\n\nThe task watchdog and per-frame work were left untouched.\n\n## On-board verification\n\n```\nI (1113) dsp: fps=50\n...\nI (19473) dsp: fps=50\nnon-50 fps lines: 0\nwatchdog lines: 0\n```"
+}

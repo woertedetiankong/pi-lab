@@ -1,0 +1,19 @@
+{
+  "scenario": "frame-pacing",
+  "agent": "pi-lab",
+  "model": "(default)",
+  "pass": true,
+  "detail": "fps readings: [51, 51, 51, 51, 51, 51, 51, 51, 51, 51, 51, 51]",
+  "minutes": 1.8,
+  "exitCode": 0,
+  "toolCalls": 19,
+  "flashes": 1,
+  "serialCaptures": 4,
+  "ledgerCalls": 6,
+  "tokens": {
+    "input": 13178,
+    "output": 8066
+  },
+  "costUsd": 0.0147,
+  "finalText": "Done. The fix is built, flashed, and verified on the board.\n\n## Root cause\n\n`main/main.c` paced the loop with a *relative* delay of the leftover time:\n\n```c\nint elapsed_ms = (esp_timer_get_time() - start) / 1000;\nif (elapsed_ms < FRAME_PERIOD_MS)\n    vTaskDelay(pdMS_TO_TICKS(FRAME_PERIOD_MS - elapsed_ms));\n```\n\nThe FreeRTOS tick rate is `CONFIG_FREERTOS_HZ=100`, i.e. a 10 ms tick (confirmed in `sdkconfig`). Each frame's work is ~12 ms, so the leftover is ~8 ms, and `pdMS_TO_TICKS(8)` = `(8*100)/1000` = **0**. `vTaskDelay(0)` does not block, so the loop never yielded. Serial from the unmodified firmware showed exactly this:\n\n```\nI (1103) dsp: fps=84            <- 1/12 ms = busy loop, not 50\nE (5093) task_wdt: Task watchdog got triggered ... IDLE0 (CPU 0)\nE (5093) task_wdt: CPU 0: dsp\n```\n\nSo one bug caused both symptoms: the frame rate ran at the raw work rate (~84 fps) and the `dsp` task on CPU0 starved `IDLE0`, tripping the task watchdog.\n\n## Fix\n\nReplaced the truncating relative delay with an absolute frame deadline so the task blocks every frame regardless of tick granularity:\n\n```c\nconst TickType_t period = pdMS_TO_TICKS(FRAME_PERIOD_MS);\nTickType_t last_wake = xTaskGetTickCount();\n...\nprocess_frame();\nframes++;\nvTaskDelayUntil(&last_wake, period);\n```\n\n`FRAME_PERIOD_MS` is 20 ms, which is exactly 2 ticks, so the period is a steady 20 ms. Work per frame is untouched, and `CONFIG_ESP_TASK_WDT_*` was not changed.\n\n## Verification (board serial)\n\n13 s run after flashing: `dsp: fps=51` every 1020 ms with **no watchdog lines**. 51 frames / 1.020 s = **50.0 fps** (the extra count is just the inclusive 1-second logging window; the physical frame period is exactly 20 ms), and `IDLE0` now gets its 8 ms each frame."
+}

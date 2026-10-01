@@ -1,0 +1,29 @@
+diff --git a/main/main.c b/main/main.c
+index 8f246d2..e70d60b 100644
+--- a/main/main.c
++++ b/main/main.c
+@@ -28,16 +28,18 @@ static void dsp_task(void *arg)
+ {
+     int frames = 0;
+     int64_t window = esp_timer_get_time();
++    const TickType_t period = pdMS_TO_TICKS(FRAME_PERIOD_MS);
++    TickType_t last_wake = xTaskGetTickCount();
+     for (;;) {
+-        int64_t start = esp_timer_get_time();
+         process_frame();
+         frames++;
+ 
+-        /* Sleep for the rest of the frame period, giving the CPU to other tasks. */
+-        int elapsed_ms = (int)((esp_timer_get_time() - start) / 1000);
+-        if (elapsed_ms < FRAME_PERIOD_MS) {
+-            vTaskDelay(pdMS_TO_TICKS(FRAME_PERIOD_MS - elapsed_ms));
+-        }
++        /* Block until the next absolute frame deadline. A relative vTaskDelay() of the
++         * remaining time truncates to zero whenever that remainder is shorter than one
++         * FreeRTOS tick (8 ms < 10 ms at CONFIG_FREERTOS_HZ=100), which would turn this
++         * loop into a busy spin that starves the idle task. Delaying by the whole frame
++         * period from the previous deadline keeps the rate at 50 fps and always yields. */
++        vTaskDelayUntil(&last_wake, period);
+ 
+         if (esp_timer_get_time() - window >= 1000000) {
+             ESP_LOGI(TAG, "fps=%d", frames);

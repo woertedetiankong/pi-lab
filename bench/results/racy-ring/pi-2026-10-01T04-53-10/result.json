@@ -1,0 +1,19 @@
+{
+  "scenario": "racy-ring",
+  "agent": "pi",
+  "model": "(default)",
+  "pass": true,
+  "detail": "12033 samples intact and in order (1003/s), no drops",
+  "minutes": 3.7,
+  "exitCode": 0,
+  "toolCalls": 22,
+  "flashes": 3,
+  "serialCaptures": 5,
+  "ledgerCalls": 0,
+  "tokens": {
+    "input": 34299,
+    "output": 18833
+  },
+  "costUsd": 0.036,
+  "finalText": "Fixed and verified on the board. Only `main/ring.c` and `main/ring.h` changed; `main/monitor.c` and `main/sample.h` are untouched, and the 1 kHz rate and 80 ms storage write are unchanged.\n\n## Root cause\n\nThe lock-free SPSC ring buffer had a publication-ordering bug (plus two smaller defects), and the sampler (esp_timer, CPU0) and monitor (pinned to CPU1) genuinely run concurrently:\n\n1. **Publish-before-fill race (the main cause of `crc_err`/`gaps`).** `rb_push()` did:\n   ```c\n   uint32_t slot = head;\n   head = (slot + 1) % RB_SIZE;   // published to the consumer here...\n   slots[slot] = *s;              // ...before the 64-byte copy\n   slots[slot].crc = sample_crc(&slots[slot]);\n   ```\n   The disassembly confirms the new `head` store lands before the 64-byte `memcpy`/CRC. On the other core the monitor sees the \"new\" index and copies a half-written slot → bad CRC (`crc_err`). Since a bad-CRC sample is skipped without advancing `expect`, the next good sample looks out of sequence → `gaps`. There were no acquire/release barriers either (`volatile` alone doesn't order stores across cores).\n\n2. **Full-check off-by-one.** `if (rb_count() > RB_SIZE - 1)` can never be true because `rb_count()` returns at most `RB_SIZE-1`. So the producer silently overwrote unread data and never incremented `dropped` — explaining `dropped=0` in the broken log while samples were actually being lost.\n\n3. **Undersized ring.** The monitor blocks for 80 ms on the storage write while the sampler keeps producing ~80 samples, but `RB_SIZE=64` holds only 63. Even with the race fixed, that overflowed (measured `dropped` ≈ 23/s).\n\n## What I changed\n\n- **`main/ring.c`** — Rewrote the ring with C11 atomics and correct ordering:\n  - Producer fills `slots[h]` and its CRC completely, then publishes `head` with `memory_order_release`.\n  - Consumer acquires `head` (`memory_order_acquire`) before reading the slot, then publishes `tail` with release.\n  - Correct full condition `next == tail` (one slot reserved) so drops are counted and no unread data is overwritten.\n  - `dropped` is now atomic.\n- **`main/ring.h`** — `RB_SIZE` 64 → 256, enough margin to absorb the 80 ms blocked window and jitter.\n\n## Verification on the board\n\nAfter the race fix alone: `crc_err=0`, and the previously-hidden overflow surfaced as `dropped≈23/s`. After enlarging the ring, a 25 s soak gives exactly 1000 samples/s with every error counter at zero:\n\n```\nstats ok=23927 crc_err=0 gaps=0 dropped=0\n```\n\n(`ok` rises by exactly 1000 per second; `crc_err`, `gaps`, and `dropped` remain 0 throughout.)"
+}

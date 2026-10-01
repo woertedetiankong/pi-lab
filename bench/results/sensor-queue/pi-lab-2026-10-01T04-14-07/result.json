@@ -1,0 +1,19 @@
+{
+  "scenario": "sensor-queue",
+  "agent": "pi-lab",
+  "model": "(default)",
+  "pass": true,
+  "detail": "90 readings reported in order with correct temperatures",
+  "minutes": 1.1,
+  "exitCode": 0,
+  "toolCalls": 14,
+  "flashes": 1,
+  "serialCaptures": 3,
+  "ledgerCalls": 4,
+  "tokens": {
+    "input": 10895,
+    "output": 4695
+  },
+  "costUsd": 0.0095,
+  "finalText": "Root cause and fix are done and verified on the board.\n\n## Root cause\n\n`sensor_task` formatted each reading into a **single stack buffer** (`char line[48]`) that it reused for every sample, then sent `&line` through the queue:\n\n```c\nchar *msg = line;\nxQueueSend(readings, &msg, ...);\n```\n\nThe queue stored only *pointers*, and all of them pointed at the same memory. By the time `report_task` ran (after its 30 ms upload delay), the sensor had already overwritten the buffer with later readings in the burst. So each burst printed its **last** reading N times — `report seq=4 temp=21.48` ×5, `seq=9 temp=20.33` ×5, etc. — instead of seq 0,1,2,3,4 with their own temperatures.\n\n## What I changed (`main/main.c`)\n\n- Added a `reading_t { uint32_t seq; int temp_centi; }` struct and made the queue hold readings **by value**, so each queued entry owns a copy of its data (no aliasing).\n- `sensor_task` now builds a `reading_t` and sends it; `report_task` receives it and prints it.\n- Kept `FIFO_BURST = 5`, `BURST_INTERVAL_MS = 500`, and the exact `report seq=<n> temp=<t>` format unchanged.\n\n## Verification (re-flashed, serial capture)\n\n```\nreport seq=0 temp=20.00\nreport seq=1 temp=20.37\nreport seq=2 temp=20.74\nreport seq=3 temp=21.11\nreport seq=4 temp=21.48\nreport seq=5 temp=21.85\n...\n```\n\nEvery reading is now reported exactly once, in order, each with its own distinct temperature — no duplicates and no drops."
+}

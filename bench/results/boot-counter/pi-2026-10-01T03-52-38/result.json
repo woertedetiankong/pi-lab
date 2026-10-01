@@ -1,0 +1,19 @@
+{
+  "scenario": "boot-counter",
+  "agent": "pi",
+  "model": "(default)",
+  "pass": true,
+  "detail": "boot counts across three resets: [1, 2, 3]",
+  "minutes": 20.9,
+  "exitCode": 0,
+  "toolCalls": 136,
+  "flashes": 16,
+  "serialCaptures": 27,
+  "ledgerCalls": 0,
+  "tokens": {
+    "input": 57733,
+    "output": 82617
+  },
+  "costUsd": 0.1684,
+  "finalText": "Confirmed on the board: `boot_count` now increments on every reset (…2 → 3 → 4 → 5 → 6).\n\n## Root cause\n\nIn `main/main.c`, `storage_init()` had a broken boolean expression:\n\n```c\nif (err == ESP_ERR_NVS_NO_FREE_PAGES || ESP_ERR_NVS_NEW_VERSION_FOUND) {\n```\n\nThe second term is missing `err ==`. `ESP_ERR_NVS_NEW_VERSION_FOUND` is a non-zero constant, so the condition is **always true**, regardless of what `nvs_flash_init()` returned. As a result, every single boot unconditionally ran:\n\n```c\nESP_ERROR_CHECK(nvs_flash_erase());   // wipes the whole NVS partition\nerr = nvs_flash_init();               // re-init as empty\n```\n\nSo the persisted `boot_count` was erased before it could ever be read, `load_boot_count()` always hit `ESP_ERR_NVS_NOT_FOUND`, and the firmware computed `0 + 1 = 1` every time.\n\nHow I confirmed it: instrumenting `nvs_flash_init`/NVS page loading showed two init passes per boot — the first loaded the valid page with `boot_count`, then (after log \"init → ESP_OK\") `nvs_flash_erase()` ran, and the second pass found the partition all `0xff` (`mPageList EMPTY -> activatePage (ERASE)`). The `ESP_OK` in the log alongside the erase branch taken is only possible because the branch condition was a constant-true expression.\n\n## Fix\n\nAdded the missing comparison (one line):\n\n```c\nif (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {\n```\n\nNow NVS is only erased when init actually reports those errors; a normal boot loads the persisted counter, prints `count + 1`, and saves it.\n\n## Notes\n\n- Log format is unchanged — the `boot_count=%u (reset reason %d)` line and all other messages are identical.\n- Only `main/main.c` is changed (single-line diff). All temporary diagnostics in the project and in the IDF `nvs_flash` component were reverted, and `sdkconfig` was restored to its original state.\n- The M5StickS3's USB-Serial/JTAG wedged a couple of times during the repeated flash/reset cycles; I recovered it with a host-side USB re-enumerate and continued."
+}

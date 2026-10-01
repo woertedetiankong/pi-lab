@@ -15,6 +15,10 @@ rsync -a --exclude TASK.md --exclude check.py --exclude solution.patch --exclude
 find "$work" -path "$work/build" -prune -o -type f -exec touch {} +
 # BENCH_MINIMAL=1: only say what the board is, as a typical project would; no serial or recovery tools.
 if [ "${BENCH_MINIMAL:-}" = 1 ]; then agents="$here/common/AGENTS.minimal.md"; else agents="$here/common/AGENTS.md"; fi
+# A minimal project keeps ESP-IDF's default flashing behaviour (reset after flashing), as real projects do.
+if [ "${BENCH_MINIMAL:-}" = 1 ]; then
+  sed -i '' -e '/ESPTOOLPY_AFTER_NORESET/d' -e '/^# Leave the chip in the bootloader/d' -e '/^# M5StickS3 USB port. tools\/serial_capture.py/d' "$work/sdkconfig.defaults"
+fi
 # The runner needs the recovery helper either way.
 [ -x "$here/common/bin/usb_reenumerate" ] || { mkdir -p "$here/common/bin" && clang -O2 -o "$here/common/bin/usb_reenumerate" "$here/common/usb_reenumerate.c" -framework IOKit -framework CoreFoundation 2>/dev/null; }
 if [ "${BENCH_MINIMAL:-}" != 1 ]; then

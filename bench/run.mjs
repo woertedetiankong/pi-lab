@@ -13,8 +13,8 @@ const [scenario, agent, ...rest] = process.argv.slice(2);
 const opt = (name, fallback) => { const i = rest.indexOf(name); return i >= 0 ? rest[i + 1] : fallback; };
 const model = opt("--model");
 const timeoutMin = Number(opt("--timeout-min", "30"));
-if (!scenario || !["pi-lab", "pi", "claude"].includes(agent)) {
-  console.error("usage: node bench/run.mjs <scenario> <pi-lab|pi|claude> [--model provider/id] [--timeout-min 30]");
+if (!scenario || !["pi-lab", "pi-lab-kb", "pi", "claude"].includes(agent)) {
+  console.error("usage: node bench/run.mjs <scenario> <pi-lab|pi-lab-kb|pi|claude> [--model provider/id] [--timeout-min 30]");
   process.exit(2);
 }
 
@@ -48,15 +48,19 @@ idf(`idf.py build >/dev/null && idf.py -p ${port} erase-flash >/dev/null && idf.
 const task = readFileSync(join(bench, "scenarios", scenario, "TASK.md"), "utf8");
 const prompt = `${task}\nWork autonomously: nobody will answer questions. When you are done, reply with the root cause and what you changed.`;
 const sessions = join(out, "sessions");
+// pi-lab-kb also gets pi-kb, with a fresh copy of the benchmark knowledge base (bench/make-kb.mjs).
+const piKb = process.env.PI_KB_SRC ?? join(root, "..", "pi-knowledge");
+const kbDir = join(out, "kb");
+if (agent === "pi-lab-kb") execFileSync("cp", ["-R", "/tmp/pi-lab-bench/kb", kbDir]);
 const cmd = agent === "claude"
   ? ["claude", ["-p", prompt, "--dangerously-skip-permissions", "--output-format", "stream-json", "--verbose", ...(model ? ["--model", model] : [])]]
-  : ["pi", ["-p", "--mode", "json", "--no-extensions", ...(agent === "pi-lab" ? ["-e", join(root, "index.ts")] : []), "--session-dir", sessions, ...(model ? ["--model", model] : []), prompt]];
+  : ["pi", ["-p", "--mode", "json", "--no-extensions", ...(agent.startsWith("pi-lab") ? ["-e", join(root, "index.ts")] : []), ...(agent === "pi-lab-kb" ? ["-e", join(piKb, "src", "index.ts")] : []), "--session-dir", sessions, ...(model ? ["--model", model] : []), prompt]];
 
 log(`run ${agent}${model ? ` (${model})` : ""}, timeout ${timeoutMin} min`);
 const started = Date.now();
 const transcript = [];
 const exit = await new Promise(resolve => {
-  const child = spawn(cmd[0], cmd[1], { cwd: work, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ESPPORT: port } });
+  const child = spawn(cmd[0], cmd[1], { cwd: work, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ESPPORT: port, ...(agent === "pi-lab-kb" ? { PI_KB_DIR: kbDir } : {}) } });
   let buf = "";
   child.stdout.on("data", chunk => {
     buf += chunk;
@@ -90,6 +94,7 @@ const isBash = c => c.name === "bash" || c.name === "Bash";
 const flashes = calls.filter(c => isBash(c) && /idf\.py[^\n]*\bflash\b|write[-_]flash/.test(c.command ?? "")).length;
 const captures = calls.filter(c => isBash(c) && /serial_capture/.test(c.command ?? "")).length;
 const ledger = calls.filter(c => c.name === "lab_ledger").length;
+const kbCalls = calls.filter(c => c.name.startsWith("kb_")).length;
 
 // Judge the code the agent left behind on a freshly flashed board.
 log("judge: build, flash, check");
@@ -106,12 +111,12 @@ writeFileSync(join(out, "diff.patch"), diff);
 
 const result = {
   scenario, agent, model: model ?? "(default)", pass: check.pass, detail: check.detail,
-  minutes: Number(minutes.toFixed(1)), exitCode: exit, toolCalls: calls.length, flashes, serialCaptures: captures, ledgerCalls: ledger,
+  minutes: Number(minutes.toFixed(1)), exitCode: exit, toolCalls: calls.length, flashes, serialCaptures: captures, ledgerCalls: ledger, kbCalls,
   tokens: { input: usage.input, output: usage.output }, costUsd: Number(usage.cost.toFixed(4)), finalText,
 };
 writeFileSync(join(out, "result.json"), JSON.stringify(result, null, 2) + "\n");
 if (check.log_tail) writeFileSync(join(out, "judge-serial.log"), check.log_tail);
 log(`${check.pass ? "PASS" : "FAIL"}: ${check.detail}`);
-log(`${result.minutes} min, ${calls.length} tool calls, ${flashes} flashes, ${captures} serial captures, ${ledger} ledger calls, $${result.costUsd}`);
+log(`${result.minutes} min, ${calls.length} tool calls, ${flashes} flashes, ${captures} serial captures, ${ledger} ledger calls, ${kbCalls} kb calls, $${result.costUsd}`);
 log(`results: ${out}`);
 if (!existsSync(join(out, "result.json"))) process.exit(1);

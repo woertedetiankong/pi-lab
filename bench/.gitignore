@@ -1,3 +1,5 @@
 results/*/*/transcript.jsonl
 results/*/*/sessions/
 __pycache__/
+docs-cache/
+results/*/*/kb/

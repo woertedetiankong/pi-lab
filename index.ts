@@ -85,7 +85,7 @@ export default function piLab(pi: ExtensionAPI): void {
     }
   };
   // pi-kb answers with the shelf it put the board's datasheets and notes on.
-  pi.events.on("pi-kb:board-shelf", data => { kbShelf = (data as { shelf?: string }).shelf; });
+  pi.events?.on("pi-kb:board-shelf", data => { kbShelf = (data as { shelf?: string }).shelf; });
 
   const usePack = async (ctx: ExtensionContext) => {
     const id = process.env.PI_LAB_BOARD ?? projectBoard(projectRoot(ctx.cwd));
@@ -103,7 +103,7 @@ export default function piLab(pi: ExtensionAPI): void {
     const fetchFile = async (url: string, file: string) => (await pi.exec("curl", ["-sSfL", "-o", file, url], { timeout: 120_000 })).code === 0;
     const docs = await ensureDocs(pack, fetchFile).catch(() => []);
     const event: BoardEvent = { name: pack.name, files: [...docs.map(d => ({ path: d.path, note: false })), ...notePaths(pack).map(path => ({ path, note: true }))] };
-    pi.events.emit(BOARD_EVENT, event);
+    pi.events?.emit(BOARD_EVENT, event);
   };
 
   registerBoardTools(pi, {

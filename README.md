@@ -22,6 +22,13 @@
 4. **固件同步检测**：烧录成功后记下固件源码的指纹（git HEAD、源码改动、未跟踪文件）。之后固件相关文件一改，状态栏显示 `⚠ board runs stale firmware`，agent 也会看到。agent 改了固件却没烧录就想结束时，提醒一次。需要项目是 git 仓库。
 5. **旧日志折叠**：编译、烧录、串口日志在发给模型的上下文里只保留最新两份完整内容，更早的只留开头、结尾和像错误的行。会话文件里仍然保存完整日志。
 
+6. **板卡包**：一块板子的知识打包在 `boards/<板子>/` 里：
+   - `board.json`：芯片、I2C 总线和上面的器件、引脚、按键行为、已知的坑、用到的芯片手册。每一项都标明来源：在板子上实测的，或来自厂商文档、驱动库。
+   - `notes/`：在板子上验证过的经验笔记（pi-kb 笔记格式）。
+   - 用 `/lab board <id>` 给项目选定板子（存在项目的 `.pi/lab.json`）；连着匹配的 USB 设备、又还没选板子时，pi-lab 会提示。选定后，引脚、总线和已知的坑写进提示词；芯片手册下载一次到 `~/.pi/agent/pi-lab/boards/<id>/docs/`。
+   - 同时装了 [pi-kb](https://github.com/woertedetiankong/pi-kb) 时，手册和笔记会导入到以板子命名的资料集，agent 检索时带页码引用；没装时，agent 直接读这些文件。
+   - 目前有：`m5sticks3`（M5StickS3：内部 I2C、BMI270、M5PM1，以及串口打开即复位、USB 卡死、侧键下载模式、BMI270 初始化四篇笔记）。
+
 ## 实测
 
 `bench/` 是在真实 M5StickS3 上的调试测试：6 个埋了 bug 的 ESP-IDF 项目，agent 修完后由脚本烧录并看板子判定。详见 [bench/README.md](bench/README.md)。目前的结论（deepseek-flash）：
@@ -37,6 +44,7 @@
 | `/lab target <描述>` | 设置目标板，例如 `/lab target STM32F407 on /dev/ttyUSB0` |
 | `/lab flashed` | 在 pi 之外烧录后（IDE、图形烧录工具），手动标记为已同步 |
 | `/lab clear` | 清空当前分支的账本 |
+| `/lab board [id \| none]` | 查看或选择这个项目用的板卡包 |
 
 固件同步检测要求项目是 git 仓库；不是 git 仓库时，这部分功能不启用。
 

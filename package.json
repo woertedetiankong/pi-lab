@@ -1,12 +1,13 @@
 {
   "name": "pi-lab",
   "version": "0.1.0",
-  "description": "Embedded debugging for pi: a debug ledger that survives compaction, firmware-vs-source sync tracking, and folding of old hardware logs",
+  "description": "Embedded debugging for pi: flash and read the board reliably, keep a debug ledger that survives compaction, track firmware sync, and guard the toolchain",
   "type": "module",
   "license": "MIT",
   "files": [
     "index.ts",
     "src",
+    "assets",
     "README.md",
     "LICENSE"
   ],

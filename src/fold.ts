@@ -61,7 +61,8 @@ export function foldLogs(messages: AgentMessage[], o: FoldOptions = DEFAULT_FOLD
   }
   const logs: number[] = [];
   messages.forEach((m, i) => {
-    if (m.role === "toolResult" && m.toolName === "bash" && isLogCommand(commands.get(m.toolCallId) ?? "")) logs.push(i);
+    if (m.role !== "toolResult") return;
+    if (m.toolName === "board_serial" || m.toolName === "board_flash" || (m.toolName === "bash" && isLogCommand(commands.get(m.toolCallId) ?? ""))) logs.push(i);
   });
   const old = new Set(logs.slice(0, Math.max(0, logs.length - o.keepRecent)));
   if (!old.size) return undefined;

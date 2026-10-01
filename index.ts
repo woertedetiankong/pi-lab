@@ -1,16 +1,23 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { compare, describeFirmware, FLASH_ENTRY, type FirmwareState, firmwareStatus, type FlashRecord, isFirmwareFile, isFlashCommand, sourceState } from "./src/firmware.ts";
+import { registerBoardTools } from "./src/board-tools.ts";
 import { foldLogs } from "./src/fold.ts";
+import { checkCommand, checkWrite } from "./src/guard.ts";
 import { applyAction, emptyLedger, isEmpty, LEDGER_ENTRY, type Ledger, type LedgerAction, renderLedger } from "./src/ledger.ts";
 
 const NUDGE_TYPE = "pi-lab.stale-nudge";
+const STEP_BACK_TYPE = "pi-lab.step-back";
+/** Tool calls without settling anything before the agent is asked to step back. */
+const STEP_BACK_AFTER = 30;
 
 const GUIDELINES = [
   "You are debugging embedded firmware on real hardware. Keep a debug ledger with the lab_ledger tool; it is shown to you below on every turn and survives context compaction.",
   "- Record a fact only when the hardware showed it (serial output, a register read, a measurement), and say what showed it.",
   "- Before testing an idea, add it as a hypothesis; when a test settles it, mark it ruled_out or confirmed with the evidence. Do not retest an idea the ledger already ruled out unless something relevant changed.",
+  "- Flash with board_flash and read the board with board_serial (it resets the board and captures from the first boot line). Do not run `idf.py monitor` or other serial monitors: they never exit. If the board stops answering, use board_recover.",
   "- What you see on the board only reflects your edits after they are flashed. Check the Firmware line before drawing conclusions from board behaviour.",
+  "- Keep changes inside the project. Do not edit the SDK or toolchain (copy a component into the project to change it) and do not install packages into shared Python environments.",
   "- Older build, flash and serial logs are shortened in your context; re-run a command if you need its full output.",
 ];
 
@@ -19,6 +26,7 @@ export default function piLab(pi: ExtensionAPI): void {
   let flash: FlashRecord | undefined;
   let firmware: FirmwareState = { kind: "unknown" };
   let editedFirmware = false, nudged = false;
+  let sinceProgress = 0, steppedBack = false;
 
   const run = (cwd: string) => (command: string, args: string[]) => pi.exec(command, args, { cwd, timeout: 10_000 });
 
@@ -52,14 +60,50 @@ export default function piLab(pi: ExtensionAPI): void {
     if (result.changed) {
       ledger = result.ledger;
       pi.appendEntry(LEDGER_ENTRY, ledger);
+      // A new fact or a settled hypothesis is progress; a new idea is not.
+      if (act.action === "add_fact" || (act.action === "update" && (act.status === "ruled_out" || act.status === "confirmed"))) {
+        sinceProgress = 0;
+        steppedBack = false;
+      }
     }
     return result;
   };
 
+  registerBoardTools(pi, { flashed: recordFlash });
+
   pi.on("session_start", async (_event, ctx) => { restore(ctx); await refresh(ctx); });
   pi.on("session_tree", async (_event, ctx) => { restore(ctx); await refresh(ctx); });
 
-  pi.on("agent_start", () => { editedFirmware = false; nudged = false; });
+  pi.on("agent_start", () => { editedFirmware = false; nudged = false; sinceProgress = 0; steppedBack = false; });
+
+  // Changes outside the project, and commands that permanently change a chip, need a person's yes.
+  pi.on("tool_call", async (event, ctx) => {
+    if (process.env.PI_LAB_GUARD === "off") return;
+    const input = event.input as Record<string, unknown>;
+    const verdict = event.toolName === "bash" && typeof input.command === "string" ? checkCommand(input.command, ctx.cwd)
+      : (event.toolName === "edit" || event.toolName === "write") && typeof input.path === "string" ? checkWrite(input.path, ctx.cwd)
+      : undefined;
+    if (!verdict) return;
+    if (ctx.hasUI) {
+      const what = typeof input.command === "string" ? input.command : String(input.path);
+      const title = verdict.hardware ? "pi-lab: irreversible chip operation" : "pi-lab: change outside the project";
+      if (await ctx.ui.confirm(title, `${verdict.reason}\n\n${what}\n\nAllow it?`)) return;
+    }
+    return { block: true, reason: `pi-lab blocked this: ${verdict.reason}${ctx.hasUI ? " The user declined." : " Nobody is available to approve it."}` };
+  });
+
+  // Many tool calls without a new fact or a settled hypothesis: likely deep in the wrong direction.
+  pi.on("turn_end", event => {
+    sinceProgress += event.toolResults.length;
+    if (sinceProgress < STEP_BACK_AFTER || steppedBack) return;
+    steppedBack = true;
+    return {
+      entries: [...event.entries, {
+        type: "custom_message", customType: STEP_BACK_TYPE, display: false,
+        content: `pi-lab: ${sinceProgress} tool calls without a new fact or a settled hypothesis. Step back before going deeper: restate the original symptom, re-read the code path that produces it from start to end, and write down the simplest explanation that fits everything observed so far. Record what you conclude with lab_ledger.`,
+      }],
+    };
+  });
 
   pi.on("tool_result", async (event, ctx) => {
     if (event.toolName === "bash" && !event.isError && typeof event.input.command === "string" && isFlashCommand(event.input.command)) {

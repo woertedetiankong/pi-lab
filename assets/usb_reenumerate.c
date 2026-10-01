@@ -2,11 +2,13 @@
 // The M5StickS3 USB port occasionally stops responding after a reset; this recovers it without touching the cable.
 // Written by a pi agent during a pi-lab benchmark run. Usage: usb_reenumerate [vendor-id] (default 0x303a, Espressif)
 #include <stdio.h>
+#include <stdlib.h>
 #include <IOKit/IOKitLib.h>
 #include <IOKit/IOCFPlugIn.h>
 #include <IOKit/usb/IOUSBLib.h>
 
-int main(void) {
+int main(int argc, char **argv) {
+    long want_vendor = argc > 1 ? strtol(argv[1], NULL, 0) : 0x303a;
     io_iterator_t iter;
     kern_return_t kr = IOServiceGetMatchingServices(kIOMainPortDefault,
         IOServiceMatching(kIOUSBDeviceClassName), &iter);
@@ -27,9 +29,9 @@ int main(void) {
         UInt16 vendor = 0, product = 0;
         (*dev)->GetDeviceVendor(dev, &vendor);
         (*dev)->GetDeviceProduct(dev, &product);
-        if (vendor == 12346 && product == 4097) {
+        if (vendor == want_vendor) {
             found = 1;
-            printf("Found ESP32 USB JTAG (vid=%d pid=%d)\n", vendor, product);
+            printf("Found USB device %04x:%04x\n", vendor, product);
             IOReturn r = (*dev)->USBDeviceOpen(dev);
             printf("open -> %x\n", r);
             r = (*dev)->USBDeviceReEnumerate(dev, 0);

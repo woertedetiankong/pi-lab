@@ -13,13 +13,17 @@ rsync -a --exclude TASK.md --exclude check.py --exclude solution.patch --exclude
 # rsync keeps the scenario files' old timestamps, which are older than a cached build of a previous variant:
 # touch them so the build always recompiles what is in the work tree.
 find "$work" -path "$work/build" -prune -o -type f -exec touch {} +
-mkdir -p "$work/tools"
-cp "$here/common/serial_capture.py" "$work/tools/"
+# BENCH_MINIMAL=1: only say what the board is, as a typical project would; no serial or recovery tools.
+if [ "${BENCH_MINIMAL:-}" = 1 ]; then agents="$here/common/AGENTS.minimal.md"; else agents="$here/common/AGENTS.md"; fi
+# The runner needs the recovery helper either way.
 [ -x "$here/common/bin/usb_reenumerate" ] || { mkdir -p "$here/common/bin" && clang -O2 -o "$here/common/bin/usb_reenumerate" "$here/common/usb_reenumerate.c" -framework IOKit -framework CoreFoundation 2>/dev/null; }
-cp "$here/common/bin/usb_reenumerate" "$work/tools/"
+if [ "${BENCH_MINIMAL:-}" != 1 ]; then
+  mkdir -p "$work/tools"
+  cp "$here/common/serial_capture.py" "$here/common/bin/usb_reenumerate" "$work/tools/"
+fi
 port="${ESPPORT:-$( (ls /dev/cu.usbmodem* /dev/ttyACM* 2>/dev/null || true) | head -1)}"
 [ -n "$port" ] || { echo "no board found" >&2; exit 1; }
-sed "s#{{PORT}}#$port#g" "$here/common/AGENTS.md" > "$work/AGENTS.md"
+sed "s#{{PORT}}#$port#g" "$agents" > "$work/AGENTS.md"
 cp "$work/AGENTS.md" "$work/CLAUDE.md"
 # Datasheets the scenario comes with: cached in docs-cache/ (not committed), copied into docs/.
 if [ -f "$scenario/DOCS" ]; then

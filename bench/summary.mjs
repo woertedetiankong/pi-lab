@@ -15,7 +15,7 @@ const model = process.argv.includes("--model") ? process.argv[process.argv.index
 const median = xs => { const s = [...xs].sort((a, b) => a - b); const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
 const groups = new Map();
 for (const r of rows.filter(r => !model || r.model === model)) {
-  const key = `${r.scenario}\t${r.agent}`;
+  const key = `${r.scenario}\t${r.agent}${r.docs === "minimal" ? " (minimal)" : ""}`;
   groups.set(key, [...(groups.get(key) ?? []), r]);
 }
 const fmt = (n, d = 1) => n.toFixed(d);

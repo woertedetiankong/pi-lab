@@ -13,6 +13,7 @@ const [scenario, agent, ...rest] = process.argv.slice(2);
 const opt = (name, fallback) => { const i = rest.indexOf(name); return i >= 0 ? rest[i + 1] : fallback; };
 const model = opt("--model");
 const timeoutMin = Number(opt("--timeout-min", "30"));
+const minimal = rest.includes("--minimal");
 if (!scenario || !["pi-lab", "pi-lab-kb", "pi", "claude"].includes(agent)) {
   console.error("usage: node bench/run.mjs <scenario> <pi-lab|pi-lab-kb|pi|claude> [--model provider/id] [--timeout-min 30]");
   process.exit(2);
@@ -22,7 +23,7 @@ const work = `/tmp/pi-lab-bench/${scenario}`;
 const port = process.env.ESPPORT ?? execFileSync("bash", ["-c", "ls /dev/cu.usbmodem* /dev/ttyACM* 2>/dev/null | head -1"], { encoding: "utf8" }).trim();
 if (!port) { console.error("no board found"); process.exit(1); }
 const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-const out = join(bench, "results", scenario, `${agent}${model ? "-" + model.replace(/\W+/g, "_") : ""}-${stamp}`);
+const out = join(bench, "results", scenario, `${agent}${minimal ? "-minimal" : ""}${model ? "-" + model.replace(/\W+/g, "_") : ""}-${stamp}`);
 mkdirSync(out, { recursive: true });
 const idf = cmd => execFileSync("bash", ["-c", `source ~/.espressif/v6.0.1/esp-idf/export.sh >/dev/null 2>&1 && ${cmd}`], { cwd: work, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 << 20 });
 const log = msg => console.log(`[${new Date().toLocaleTimeString()}] ${msg}`);
@@ -40,7 +41,7 @@ const ensureBoard = () => {
 };
 
 log(`prepare ${scenario}`);
-execFileSync(join(bench, "prepare.sh"), [scenario, work], { stdio: "inherit" });
+execFileSync(join(bench, "prepare.sh"), [scenario, work], { stdio: "inherit", env: { ...process.env, BENCH_MINIMAL: minimal ? "1" : "" } });
 // Start every run from the buggy firmware on the board, with a clean NVS.
 ensureBoard();
 idf(`idf.py build >/dev/null && idf.py -p ${port} erase-flash >/dev/null && idf.py -p ${port} flash >/dev/null`);
@@ -91,10 +92,11 @@ for (const line of transcript) {
   }
 }
 const isBash = c => c.name === "bash" || c.name === "Bash";
-const flashes = calls.filter(c => isBash(c) && /idf\.py[^\n]*\bflash\b|write[-_]flash/.test(c.command ?? "")).length;
-const captures = calls.filter(c => isBash(c) && /serial_capture/.test(c.command ?? "")).length;
+const flashes = calls.filter(c => c.name === "board_flash" || (isBash(c) && /idf\.py[^\n]*\bflash\b|write[-_]flash/.test(c.command ?? ""))).length;
+const captures = calls.filter(c => c.name === "board_serial" || (isBash(c) && /serial_capture|\/dev\/(?:cu|tty)|serial\.Serial|miniterm|monitor/.test(c.command ?? ""))).length;
 const ledger = calls.filter(c => c.name === "lab_ledger").length;
 const kbCalls = calls.filter(c => c.name.startsWith("kb_")).length;
+const boardCalls = calls.filter(c => c.name.startsWith("board_")).length;
 
 // Judge the code the agent left behind on a freshly flashed board.
 log("judge: build, flash, check");
@@ -110,8 +112,8 @@ const diff = execFileSync("bash", ["-c", "git add -A >/dev/null && git diff --ca
 writeFileSync(join(out, "diff.patch"), diff);
 
 const result = {
-  scenario, agent, model: model ?? "(default)", pass: check.pass, detail: check.detail,
-  minutes: Number(minutes.toFixed(1)), exitCode: exit, toolCalls: calls.length, flashes, serialCaptures: captures, ledgerCalls: ledger, kbCalls,
+  scenario, agent, docs: minimal ? "minimal" : "full", model: model ?? "(default)", pass: check.pass, detail: check.detail,
+  minutes: Number(minutes.toFixed(1)), exitCode: exit, toolCalls: calls.length, flashes, serialCaptures: captures, ledgerCalls: ledger, kbCalls, boardCalls,
   tokens: { input: usage.input, output: usage.output }, costUsd: Number(usage.cost.toFixed(4)), finalText,
 };
 writeFileSync(join(out, "result.json"), JSON.stringify(result, null, 2) + "\n");

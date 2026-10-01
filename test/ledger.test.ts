@@ -5,7 +5,7 @@ import { applyAction, emptyLedger, type Ledger, renderLedger, similar } from "..
 const apply = (ledger: Ledger, ...acts: Parameters<typeof applyAction>[1][]) => acts.reduce((l, a) => applyAction(l, a).ledger, ledger);
 
 test("ids increase per kind and survive removal", () => {
-  let l = apply(emptyLedger(), { action: "add_fact", text: "I2C clock is 400 kHz" }, { action: "add_hypothesis", text: "pull-ups too weak" }, { action: "add_hypothesis", text: "timing register wrong" });
+  let l = apply(emptyLedger(), { action: "add_fact", text: "I2C clock is 400 kHz", evidence: "TIMINGR=0x10909CEC" }, { action: "add_hypothesis", text: "pull-ups too weak" }, { action: "add_hypothesis", text: "timing register wrong" });
   assert.deepEqual(l.facts.map(f => f.id), ["F1"]);
   assert.deepEqual(l.hypotheses.map(h => h.id), ["H1", "H2"]);
   l = apply(l, { action: "remove", id: "H1" }, { action: "add_hypothesis", text: "sensor needs config blob" });
@@ -40,4 +40,22 @@ test("render shows target, firmware and status marks", () => {
   assert.match(text, /Target: STM32F407/);
   assert.match(text, /Firmware: board runs a3f2/);
   assert.match(text, /\[✓\] H1 clock wrong \(evidence: RCC_CFGR=0x0\)/);
+});
+
+test("a fact needs evidence and stays a single observation until reproduced", () => {
+  assert.equal(applyAction(emptyLedger(), { action: "add_fact", text: "count persists with a delay" }).changed, false);
+  // What the agent recorded in the run that went down the wrong path for 30 minutes.
+  let l = apply(emptyLedger(), {
+    action: "add_fact",
+    text: "Adding ~20ms delay between nvs_flash_init() and nvs_open() makes the boot count persist (1,2,3,...).",
+    evidence: "serial_capture after the delay build",
+  });
+  let text = renderLedger(l);
+  assert.match(text, /Single observations \(not reproduced yet; do not build on them, and doubt any that contradict the code\):\n- F1 Adding ~20ms/);
+  assert.doesNotMatch(text, /Established facts/);
+  assert.equal(applyAction(l, { action: "verify_fact", id: "F1" }).changed, false, "verifying needs the reproduction");
+  l = apply(l, { action: "verify_fact", id: "F1", evidence: "clean build from HEAD plus only the delay: boot_count=1,2,3 again" });
+  text = renderLedger(l);
+  assert.match(text, /Established facts \(reproduced\):\n- F1 .*reproduced: clean build from HEAD/);
+  assert.doesNotMatch(text, /Single observations/);
 });

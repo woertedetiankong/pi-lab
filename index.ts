@@ -13,7 +13,8 @@ const STEP_BACK_AFTER = 30;
 
 const GUIDELINES = [
   "You are debugging embedded firmware on real hardware. Keep a debug ledger with the lab_ledger tool; it is shown to you below on every turn and survives context compaction.",
-  "- Record a fact only when the hardware showed it (serial output, a register read, a measurement), and say what showed it.",
+  "- Record a fact only when the hardware showed it (serial output, a register read, a measurement), and say what showed it. A new fact is a single observation until you reproduce it from a clean build with one change and record that with verify_fact.",
+  "- When an observation contradicts what the code says should happen, assume the experiment is wrong before the hardware: rebuild from the original code with only one change and repeat it.",
   "- Before testing an idea, add it as a hypothesis; when a test settles it, mark it ruled_out or confirmed with the evidence. Do not retest an idea the ledger already ruled out unless something relevant changed.",
   "- Flash with board_flash and read the board with board_serial (it resets the board and captures from the first boot line). Do not run `idf.py monitor` or other serial monitors: they never exit. If the board stops answering, use board_recover.",
   "- What you see on the board only reflects your edits after they are flashed. Check the Firmware line before drawing conclusions from board behaviour.",
@@ -60,8 +61,8 @@ export default function piLab(pi: ExtensionAPI): void {
     if (result.changed) {
       ledger = result.ledger;
       pi.appendEntry(LEDGER_ENTRY, ledger);
-      // A new fact or a settled hypothesis is progress; a new idea is not.
-      if (act.action === "add_fact" || (act.action === "update" && (act.status === "ruled_out" || act.status === "confirmed"))) {
+      // A reproduced fact or a settled hypothesis is progress; a new idea or a single observation is not.
+      if (act.action === "verify_fact" || (act.action === "update" && (act.status === "ruled_out" || act.status === "confirmed"))) {
         sinceProgress = 0;
         steppedBack = false;
       }
@@ -100,7 +101,7 @@ export default function piLab(pi: ExtensionAPI): void {
     return {
       entries: [...event.entries, {
         type: "custom_message", customType: STEP_BACK_TYPE, display: false,
-        content: `pi-lab: ${sinceProgress} tool calls without a new fact or a settled hypothesis. Step back before going deeper: restate the original symptom, re-read the code path that produces it from start to end, and write down the simplest explanation that fits everything observed so far. Record what you conclude with lab_ledger.`,
+        content: `pi-lab: ${sinceProgress} tool calls without a reproduced fact or a settled hypothesis. Step back before going deeper: restate the original symptom, re-read the code path that produces it from start to end, and write down the simplest explanation that fits everything observed so far. Record what you conclude with lab_ledger.`,
       }],
     };
   });
@@ -147,16 +148,16 @@ export default function piLab(pi: ExtensionAPI): void {
     name: "lab_ledger",
     label: "Lab Ledger",
     description:
-      "Update the debug ledger for the hardware under test: set the target board, record facts the hardware has shown, and track hypotheses (open, testing, ruled_out, confirmed) with evidence. The ledger is shown to you every turn.",
+      "Update the debug ledger for the hardware under test: set the target board, record what the hardware has shown (add_fact, then verify_fact once reproduced), and track hypotheses (open, testing, ruled_out, confirmed) with evidence. The ledger is shown to you every turn.",
     promptSnippet: "Record hardware facts and debugging hypotheses in the debug ledger",
     parameters: Type.Object({
       action: Type.Union([
-        Type.Literal("set_target"), Type.Literal("add_fact"), Type.Literal("add_hypothesis"), Type.Literal("update"), Type.Literal("remove"),
+        Type.Literal("set_target"), Type.Literal("add_fact"), Type.Literal("verify_fact"), Type.Literal("add_hypothesis"), Type.Literal("update"), Type.Literal("remove"),
       ]),
       text: Type.Optional(Type.String({ description: "Target description (e.g. 'STM32F407 on /dev/ttyUSB0'), fact or hypothesis" })),
-      id: Type.Optional(Type.String({ description: "Entry id for update / remove, e.g. H2 or F1" })),
+      id: Type.Optional(Type.String({ description: "Entry id for update, verify_fact or remove, e.g. H2 or F1" })),
       status: Type.Optional(Type.Union([Type.Literal("open"), Type.Literal("testing"), Type.Literal("ruled_out"), Type.Literal("confirmed")])),
-      evidence: Type.Optional(Type.String({ description: "What the hardware showed: a log line, register value or measurement" })),
+      evidence: Type.Optional(Type.String({ description: "What the hardware showed: a log line, register value or measurement. For verify_fact: how it was reproduced" })),
       force: Type.Optional(Type.Boolean({ description: "Add a hypothesis even though it resembles one already settled" })),
     }),
     async execute(_id, params) {
@@ -167,6 +168,7 @@ export default function piLab(pi: ExtensionAPI): void {
       const act: LedgerAction =
         params.action === "set_target" ? { action: "set_target", text: params.text ?? "" }
         : params.action === "add_fact" ? { action: "add_fact", text: need(params.text, "text"), evidence: params.evidence }
+        : params.action === "verify_fact" ? { action: "verify_fact", id: need(params.id, "id"), evidence: params.evidence }
         : params.action === "add_hypothesis" ? { action: "add_hypothesis", text: need(params.text, "text"), force: params.force }
         : params.action === "update" ? { action: "update", id: need(params.id, "id"), status: params.status, evidence: params.evidence }
         : { action: "remove", id: need(params.id, "id") };

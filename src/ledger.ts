@@ -10,6 +10,9 @@ export interface Fact {
   id: string;
   text: string;
   evidence?: string;
+  /** Reproduced at least once more, from a clean build. Until then it is a single observation. */
+  verified?: boolean;
+  reproduction?: string;
 }
 
 export interface Hypothesis {
@@ -30,6 +33,7 @@ export const emptyLedger = (): Ledger => ({ facts: [], hypotheses: [] });
 export type LedgerAction =
   | { action: "set_target"; text: string }
   | { action: "add_fact"; text: string; evidence?: string }
+  | { action: "verify_fact"; id: string; evidence?: string }
   | { action: "add_hypothesis"; text: string; force?: boolean }
   | { action: "update"; id: string; status?: HypothesisStatus; evidence?: string }
   | { action: "remove"; id: string };
@@ -50,9 +54,24 @@ export function applyAction(ledger: Ledger, act: LedgerAction): ApplyResult {
       next.target = act.text.trim() || undefined;
       return { ledger: next, changed: true, message: next.target ? `Target: ${next.target}` : "Target cleared." };
     case "add_fact": {
-      const fact: Fact = { id: nextId("F", next.facts), text: act.text.trim(), evidence: act.evidence?.trim() || undefined };
+      if (!act.evidence?.trim()) {
+        return { ledger, changed: false, message: "Give the evidence: what the hardware showed (a log line, register value, measurement)." };
+      }
+      const fact: Fact = { id: nextId("F", next.facts), text: act.text.trim(), evidence: act.evidence.trim() };
       next.facts.push(fact);
-      return { ledger: next, changed: true, message: `Added ${fact.id}.` };
+      return {
+        ledger: next, changed: true,
+        message: `Added ${fact.id} as a single observation. If it contradicts what the code implies, suspect the experiment first ` +
+          "(a stale build, leftover instrumentation, a different code path than you think). Reproduce it from a clean build with one change, " +
+          `then record that with verify_fact before building on it.`,
+      };
+    }
+    case "verify_fact": {
+      const index = next.facts.findIndex(f => f.id === act.id);
+      if (index < 0) return { ledger, changed: false, message: `No fact ${act.id}.` };
+      if (!act.evidence?.trim()) return { ledger, changed: false, message: `Say how ${act.id} was reproduced: the clean build, the one change, and what the hardware showed again.` };
+      next.facts[index] = { ...next.facts[index]!, verified: true, reproduction: act.evidence.trim() };
+      return { ledger: next, changed: true, message: `${act.id} is now an established fact.` };
     }
     case "add_hypothesis": {
       const tried = next.hypotheses.find(h => (h.status === "ruled_out" || h.status === "confirmed") && similar(h.text, act.text));
@@ -114,9 +133,14 @@ export function renderLedger(ledger: Ledger, firmware?: string): string {
   const lines: string[] = [];
   if (ledger.target) lines.push(`Target: ${ledger.target}`);
   if (firmware) lines.push(`Firmware: ${firmware}`);
-  if (ledger.facts.length) {
-    lines.push("Established facts:");
-    for (const f of ledger.facts) lines.push(`- ${f.id} ${f.text}${f.evidence ? ` (evidence: ${f.evidence})` : ""}`);
+  const established = ledger.facts.filter(f => f.verified), observed = ledger.facts.filter(f => !f.verified);
+  if (established.length) {
+    lines.push("Established facts (reproduced):");
+    for (const f of established) lines.push(`- ${f.id} ${f.text} (evidence: ${f.evidence}; reproduced: ${f.reproduction})`);
+  }
+  if (observed.length) {
+    lines.push("Single observations (not reproduced yet; do not build on them, and doubt any that contradict the code):");
+    for (const f of observed) lines.push(`- ${f.id} ${f.text}${f.evidence ? ` (evidence: ${f.evidence})` : ""}`);
   }
   if (ledger.hypotheses.length) {
     lines.push("Hypotheses ([ ] open, [~] testing, [x] ruled out, [✓] confirmed):");

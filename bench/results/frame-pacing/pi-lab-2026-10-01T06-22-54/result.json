@@ -1,0 +1,20 @@
+{
+  "scenario": "frame-pacing",
+  "agent": "pi-lab",
+  "model": "(default)",
+  "pass": true,
+  "detail": "fps readings: [50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50]",
+  "minutes": 4.3,
+  "exitCode": 0,
+  "toolCalls": 26,
+  "flashes": 4,
+  "serialCaptures": 6,
+  "ledgerCalls": 6,
+  "kbCalls": 0,
+  "tokens": {
+    "input": 12952,
+    "output": 15820
+  },
+  "costUsd": 0.0245,
+  "finalText": "Done. The fix is flashed and verified on the board.\n\n## Root cause\n\n`CONFIG_FREERTOS_HZ=100`, i.e. a 10 ms tick. Each frame does ~12 ms of work, so the old code tried to sleep the remaining `20 - 12 = 8 ms` with:\n\n```c\nvTaskDelay(pdMS_TO_TICKS(FRAME_PERIOD_MS - elapsed_ms));\n```\n\n`pdMS_TO_TICKS(8)` = `8 / 10` = **0 ticks**, and `vTaskDelay(0)` returns immediately without blocking. So the task never slept: it looped as fast as the 12 ms of work allowed (~84 fps), never yielding to the idle task, and the task watchdog fired on `IDLE0 (CPU 0)` every ~5 s.\n\nBaseline serial capture confirmed it: `dsp: fps=84` plus repeated `task_wdt: IDLE0 (CPU 0)` with CPU 0 running `dsp`.\n\n## What I changed (`main/main.c`)\n\n- Pace on an absolute deadline with `vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(FRAME_PERIOD_MS))`. Since the 20 ms frame period is exactly 2 ticks, every iteration blocks until the true frame boundary instead of rounding a fractional remainder down to 0. This also gives the idle task CPU time each frame.\n- Moved the once-per-second sampling to the top of the frame slot and report `frames * 1e6 / elapsed_us`, so the logged `fps` is the measured rate (the raw count over a boundary-straddling window showed 51).\n\n`process_frame()` and its 12 ms work budget are untouched, and the task-watchdog configuration is unchanged (still enabled, 5 s timeout, still checking `IDLE0`).\n\n## Verification on hardware\n\n- Modified firmware, 28 s capture: `dsp: fps=50` every second, no `task_wdt` lines.\n- Separate 22 s capture: 0 `task_wdt` matches (firmware logged steadily).\n\nDiff is limited to `main/main.c`."
+}

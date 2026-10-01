@@ -1,0 +1,20 @@
+{
+  "scenario": "boot-counter",
+  "agent": "pi",
+  "model": "(default)",
+  "pass": true,
+  "detail": "boot counts across three resets: [1, 2, 3]",
+  "minutes": 2,
+  "exitCode": 0,
+  "toolCalls": 25,
+  "flashes": 2,
+  "serialCaptures": 4,
+  "ledgerCalls": 0,
+  "kbCalls": 0,
+  "tokens": {
+    "input": 8227,
+    "output": 7177
+  },
+  "costUsd": 0.0123,
+  "finalText": "## Root cause\n\nIn `main/main.c`, the NVS-recovery check had an operator-precedence bug:\n\n```c\nif (err == ESP_ERR_NVS_NO_FREE_PAGES || ESP_ERR_NVS_NEW_VERSION_FOUND) {\n```\n\nThe second comparison was missing `err ==`. Since `ESP_ERR_NVS_NEW_VERSION_FOUND` is a non-zero constant, the right-hand operand of `||` is always true, so the whole condition is always true. As a result `nvs_flash_erase()` ran on **every boot**, wiping the `stats` namespace before the previous `boot_count` could be read. `load_boot_count()` therefore always hit `ESP_ERR_NVS_NOT_FOUND`, printing `boot_count=1` (then freshly saving 1) forever.\n\nI confirmed this by dumping the NVS partition (it contained `boot_count: 1` at `0x9000`) and by observing the `no boot count stored yet` log on every reset despite successful commits.\n\n## Fix\n\nChanged the condition to compare both errors:\n\n```c\nif (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {\n```\n\nNow the partition is only erased when NVS actually reports one of those two errors. Log format is unchanged.\n\n## Verification on the board\n\nAfter rebuilding/flashing, three consecutive resets produced:\n\n```\nboot_count=2  (reset reason 11)   saved boot_count=2\nboot_count=3  (reset reason 11)   saved boot_count=3\nboot_count=4  (reset reason 11)   saved boot_count=4\n```\n\nThe counter now persists and increments by one per reset."
+}

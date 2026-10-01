@@ -1,0 +1,20 @@
+{
+  "scenario": "imu-zeros",
+  "agent": "pi",
+  "model": "(default)",
+  "pass": true,
+  "detail": "|a| averages 0.996 g at rest over 34 readings",
+  "minutes": 3.5,
+  "exitCode": 0,
+  "toolCalls": 51,
+  "flashes": 2,
+  "serialCaptures": 3,
+  "ledgerCalls": 0,
+  "kbCalls": 0,
+  "tokens": {
+    "input": 25518,
+    "output": 19067
+  },
+  "costUsd": 0.036,
+  "finalText": "Done. The firmware is fixed and flashed to the board; it now reads the real sensor at |a| ≈ 0.997 g.\n\n## Root cause\n\nThere were two bugs in `main/bmi270.c`:\n\n1. **Config file was loaded while advanced power-save was still enabled (the cause of the all-zero readings).**\n   The BMI270 datasheet (§4.4 \"Power-On-Reset and Device Initialization\") requires the sequence: disable `PWR_CONF.adv_power_save`, wait ≥450 µs, then `INIT_CTRL=0x00`, upload the 8 kB feature config, then `INIT_CTRL=0x01`. The code called `upload_config()` **first** and only set `PWR_CONF=0x00` afterward, so the ASIC ignored the configuration load. I confirmed this on the board by reading `INTERNAL_STATUS` (0x21): it returned `0x00` = `not_init`, and the data registers stayed zero.\n\n2. **Wrong register address for the accelerometer range.**\n   `BMI270_ACC_RANGE` was defined as `0x42`, which is `GYR_RANGE`. The actual `ACC_RANGE` is `0x41` (reset value `0x02` = ±8 g). So the code never wrote the intended ±2 g range, while `LSB_PER_G_2G = 16384` assumes ±2 g. This is why simply enabling the config would have produced ~0.25 g instead of ~1 g.\n\n## What I changed in `main/bmi270.c`\n\n- Moved `write_reg(BMI270_PWR_CONF, 0x00)` **before** `upload_config()`, followed by a ≥450 µs wait (`vTaskDelay(1 ms)`), matching the datasheet init sequence.\n- Corrected `BMI270_ACC_RANGE` from `0x42` to `0x41`.\n- Added a read/log of `INTERNAL_STATUS` after config load (`internal status 0x01` on the fixed board).\n- Left the log format, the 5 Hz loop, and the real BMI270 sensor reads unchanged. The config blob itself was verified byte-for-byte identical to Bosch's official `bmi270_config_file`.\n\nVerified on hardware: `internal status 0x01`, then `accel x=-0.028 y=-0.025 z=0.996 |a|=0.997`."
+}

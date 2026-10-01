@@ -1,0 +1,55 @@
+diff --git a/main/main.c b/main/main.c
+index 8f246d2..4cb59f6 100644
+--- a/main/main.c
++++ b/main/main.c
+@@ -9,6 +9,7 @@
+ static const char *TAG = "dsp";
+ 
+ #define FRAME_PERIOD_MS 20   /* 50 frames per second */
++#define FRAME_PERIOD_TICKS pdMS_TO_TICKS(FRAME_PERIOD_MS)
+ #define WORK_US         12000
+ 
+ static volatile float sink;
+@@ -27,22 +28,33 @@ static void process_frame(void)
+ static void dsp_task(void *arg)
+ {
+     int frames = 0;
+-    int64_t window = esp_timer_get_time();
++    int64_t window = 0;
++    TickType_t last_wake = xTaskGetTickCount();
+     for (;;) {
+-        int64_t start = esp_timer_get_time();
+         process_frame();
+         frames++;
+ 
+-        /* Sleep for the rest of the frame period, giving the CPU to other tasks. */
+-        int elapsed_ms = (int)((esp_timer_get_time() - start) / 1000);
+-        if (elapsed_ms < FRAME_PERIOD_MS) {
+-            vTaskDelay(pdMS_TO_TICKS(FRAME_PERIOD_MS - elapsed_ms));
+-        }
++        /*
++         * Pace against an absolute deadline so the frame period is exactly
++         * FRAME_PERIOD_TICKS. The relative "delay for the remainder" approach
++         * breaks down at CONFIG_FREERTOS_HZ=100: the 8 ms remainder rounds to 0
++         * ticks, so the task never blocks and starves the idle task.
++         */
++        vTaskDelayUntil(&last_wake, FRAME_PERIOD_TICKS);
+ 
+-        if (esp_timer_get_time() - window >= 1000000) {
++        int64_t now = esp_timer_get_time();
++        if (window == 0) {
++            /* Start the first measurement window on a frame boundary, so the
++             * startup frame is not counted on top of a full second of frames. */
++            window = now;
++            frames = 0;
++        } else if (now - window >= 1000000) {
+             ESP_LOGI(TAG, "fps=%d", frames);
+             frames = 0;
+-            window = esp_timer_get_time();
++            /* Advance the window by exactly one second; resetting it to "now"
++             * would fold the (blocking) log time into the next window and
++             * shift it across a frame boundary, inflating the count by one. */
++            window += 1000000;
+         }
+     }
+ }

@@ -1,0 +1,22 @@
+{
+  "scenario": "frame-pacing",
+  "agent": "pi",
+  "docs": "full",
+  "model": "(default)",
+  "pass": true,
+  "detail": "fps readings: [50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50]",
+  "minutes": 3.6,
+  "exitCode": 0,
+  "toolCalls": 22,
+  "flashes": 4,
+  "serialCaptures": 10,
+  "ledgerCalls": 0,
+  "kbCalls": 0,
+  "boardCalls": 0,
+  "tokens": {
+    "input": 8059,
+    "output": 13927
+  },
+  "costUsd": 0.0208,
+  "finalText": "## Root cause\n\n`CONFIG_FREERTOS_HZ=100` (10 ms tick) combined with truncating the remaining sleep to whole milliseconds:\n\n```c\nint elapsed_ms = (esp_timer_get_time() - start) / 1000;   // ≈ 12 ms\nif (elapsed_ms < 20) vTaskDelay(pdMS_TO_TICKS(20 - elapsed_ms));  // pdMS_TO_TICKS(8) == 0\n```\n\n`process_frame()` burns ~12 ms, leaving an ~8 ms remainder, but `pdMS_TO_TICKS(8)` rounds down to **0 ticks** at 100 Hz. `vTaskDelay(0)` returns immediately, so the loop never slept: it ran frames back-to-back at ~12 ms → **84 fps**, and because the `dsp` task is pinned to core 0 at priority 5 it never yielded the CPU to `IDLE0`. That starvation is what fired the task watchdog (`IDLE0 (CPU 0)` while `dsp` was running).\n\n## Fix (`main/main.c`)\n\n- Replaced the relative remainder-sleep with `vTaskDelayUntil()` against an absolute tick deadline (`pdMS_TO_TICKS(FRAME_PERIOD_MS)` = 2 ticks = 20 ms), placed before `process_frame()`. The task now blocks ~8 ms every frame and the period is exactly 20 ms regardless of tick rate.\n- Anchored the one-second `fps` report to an absolute deadline (`next_report += 1 s`) instead of resetting the window to the current time, so logging overhead can't shift the window and add an extra frame.\n- `process_frame()` (the 12 ms of work) is unchanged, and the task watchdog configuration was not touched.\n\n## Verified on the board\n\nFlashed and captured 24 s of serial: `fps=50` every 1000 ms with no `task_wdt` output (`tools/serial_capture.py --seconds 25`)."
+}

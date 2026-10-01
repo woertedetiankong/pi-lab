@@ -1,0 +1,80 @@
+diff --git a/main/ring.c b/main/ring.c
+index ff43f97..12d1424 100644
+--- a/main/ring.c
++++ b/main/ring.c
+@@ -1,36 +1,47 @@
+ #include "ring.h"
++#include <stdatomic.h>
++
++/* Single-producer, single-consumer ring buffer.
++ *
++ * The producer owns head, the consumer owns tail. Slots are only valid once the
++ * producer has published the slot's index by advancing head with release
++ * ordering: the consumer acquires head before touching a slot. This makes the
++ * pair of indices the synchronisation point instead of copying the slot in
++ * place while the consumer may already be looking at it. */
+ 
+ static sample_t slots[RB_SIZE];
+ static volatile uint32_t head; /* next slot the producer writes */
+ static volatile uint32_t tail; /* next slot the consumer reads */
+ static volatile uint32_t dropped;
+ 
+-static uint32_t rb_count(void)
+-{
+-    return (head - tail + RB_SIZE) % RB_SIZE;
+-}
+-
+ bool rb_push(const sample_t *s)
+ {
+-    if (rb_count() > RB_SIZE - 1) {
++    uint32_t slot = head;
++    uint32_t next = (slot + 1) % RB_SIZE;
++    if (next == tail) {
++        /* Full: writing here would overwrite an unread slot. */
+         dropped++;
+         return false;
+     }
+-    /* Claim the slot first so the consumer can start on it right away, then fill it in. */
+-    uint32_t slot = head;
+-    head = (slot + 1) % RB_SIZE;
+     slots[slot] = *s;
+     slots[slot].crc = sample_crc(&slots[slot]);
++    /* Publish the slot only after it is completely written. */
++    atomic_thread_fence(memory_order_release);
++    head = next;
+     return true;
+ }
+ 
+ bool rb_pop(sample_t *out)
+ {
+-    if (rb_count() == 0) {
++    uint32_t slot = tail;
++    if (slot == head) {
+         return false;
+     }
+-    *out = slots[tail];
+-    tail = (tail + 1) % RB_SIZE;
++    /* Pair with the producer's release fence: the slot is fully written. */
++    atomic_thread_fence(memory_order_acquire);
++    *out = slots[slot];
++    atomic_thread_fence(memory_order_release);
++    tail = (slot + 1) % RB_SIZE;
+     return true;
+ }
+ 
+diff --git a/main/ring.h b/main/ring.h
+index 73e8c55..1312510 100644
+--- a/main/ring.h
++++ b/main/ring.h
+@@ -5,7 +5,10 @@
+ 
+ /* Single-producer, single-consumer ring buffer of samples. */
+ 
+-#define RB_SIZE 64
++/* Must hold every sample produced while the consumer is blocked in its 80 ms
++ * storage write (1 kHz * 80 ms = 80) plus normal backlog, so 256 is a safe
++ * power-of-two margin. */
++#define RB_SIZE 256
+ 
+ /* Producer side (sampler). Stamps the sample's CRC. Returns false and counts a drop when the ring is full. */
+ bool rb_push(const sample_t *s);

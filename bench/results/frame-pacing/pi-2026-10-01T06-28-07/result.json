@@ -1,0 +1,20 @@
+{
+  "scenario": "frame-pacing",
+  "agent": "pi",
+  "model": "(default)",
+  "pass": true,
+  "detail": "fps readings: [51, 51, 51, 51, 51, 51, 51, 51, 51, 51, 51, 51]",
+  "minutes": 2.4,
+  "exitCode": 0,
+  "toolCalls": 24,
+  "flashes": 2,
+  "serialCaptures": 3,
+  "ledgerCalls": 0,
+  "kbCalls": 0,
+  "tokens": {
+    "input": 15929,
+    "output": 13065
+  },
+  "costUsd": 0.0219,
+  "finalText": "Done. Verified on the board.\n\n## Root cause\n\n`CONFIG_FREERTOS_HZ=100`, so one FreeRTOS tick is 10 ms. In `dsp_task` the pacing was computed in milliseconds and then converted to ticks:\n\n```c\nint elapsed_ms = ...;                                  /* ~12 ms of work */\nvTaskDelay(pdMS_TO_TICKS(FRAME_PERIOD_MS - elapsed_ms)); /* pdMS_TO_TICKS(8) */\n```\n\nAt 100 Hz, `pdMS_TO_TICKS(8)` = `8*100/1000` = **0 ticks**. `vTaskDelay(0)` returns immediately without blocking, so the task never yielded:\n\n- The loop ran back-to-back at ~1 frame / 12 ms ≈ **83 fps** (observed `fps=84`).\n- Because the priority-5 task on CPU0 never slept, **IDLE0 was starved** and the task watchdog fired every 5 s.\n\n## Fix (`main/main.c`)\n\nReplaced the elapsed-time arithmetic with `vTaskDelayUntil`, which schedules against the previous wake tick:\n\n```c\nconst TickType_t period = pdMS_TO_TICKS(FRAME_PERIOD_MS);  /* = 2 ticks = 20 ms */\nTickType_t last_wake = xTaskGetTickCount();\nfor (;;) {\n    process_frame();\n    frames++;\n    vTaskDelayUntil(&last_wake, period);\n    ...\n}\n```\n\n`pdMS_TO_TICKS(20)` is exactly 2 ticks at 100 Hz, so the period is a true 20 ms (50 fps), and the task blocks every frame, letting IDLE0 run.\n\nUntouched per the constraints: `WORK_US`/`process_frame`, and all task-watchdog settings.\n\n## Board verification (13 s capture)\n\n- `fps=51` × 12 consecutive lines, no `task_wdt` / \"Task watchdog got triggered\" (the logged 51 is only the ~1 s log-window quantization overshoot; the actual frame period is 20 ms = 50 fps, within the accepted 48–51 range).\n- Before the fix, the same capture showed `fps=84` and IDLE0 watchdog resets."
+}

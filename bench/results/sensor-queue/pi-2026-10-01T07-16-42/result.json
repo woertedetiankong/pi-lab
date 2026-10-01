@@ -1,0 +1,20 @@
+{
+  "scenario": "sensor-queue",
+  "agent": "pi",
+  "model": "(default)",
+  "pass": true,
+  "detail": "90 readings reported in order with correct temperatures",
+  "minutes": 1.2,
+  "exitCode": 0,
+  "toolCalls": 13,
+  "flashes": 1,
+  "serialCaptures": 4,
+  "ledgerCalls": 0,
+  "kbCalls": 0,
+  "tokens": {
+    "input": 6640,
+    "output": 4636
+  },
+  "costUsd": 0.0082,
+  "finalText": "Verified on the board: reports now come out `seq=0, 1, 2, ...` in order, each with its own temperature, no duplicates or drops.\n\n## Root cause\n\nThe queue was created to hold `char *` pointers (`sizeof(char *)`), and `sensor_task` sent `&msg` where `msg` was a pointer to a single stack-local buffer:\n\n```c\nchar line[48];\n...\nchar *msg = line;\nxQueueSend(readings, &msg, ...);\n```\n\nEvery item in the queue therefore pointed at the *same* `line` buffer on `sensor_task`'s stack. The sensor writes all 5 readings of a burst into that one buffer back-to-back, then the slow report task (30 ms per report) drains the queue. By the time it read each pointer, the buffer had been overwritten with the burst's last reading — so it printed the same `seq=4` value five times and every other reading was lost entirely. The queue-length 4 (vs. burst 5) also left no margin.\n\n## Fix (`main/main.c`)\n\n- Changed the queue item type from `char *` to a value struct `reading_t { uint32_t seq; int temp; }`, and the queue element size to `sizeof(reading_t)`. The reading is now copied by value into the queue, so the sensor can't overwrite it before it's reported.\n- `report_task` now formats the line from the received values, keeping the exact `report seq=<n> temp=<t>` format.\n- Set `QUEUE_LEN` to `FIFO_BURST` (5) so a full burst can always be buffered.\n\nBurst size (`FIFO_BURST 5`), burst interval (`BURST_INTERVAL_MS 500`), and the report line format are unchanged."
+}

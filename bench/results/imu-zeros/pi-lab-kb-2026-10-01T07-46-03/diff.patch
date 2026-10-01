@@ -1,0 +1,56 @@
+diff --git a/main/bmi270.c b/main/bmi270.c
+index 59d5db3..65cc9c6 100644
+--- a/main/bmi270.c
++++ b/main/bmi270.c
+@@ -11,7 +11,7 @@ static const char *TAG = "bmi270";
+ #define BMI270_ACC_DATA        0x0C
+ #define BMI270_INTERNAL_STATUS 0x21
+ #define BMI270_ACC_CONF        0x40
+-#define BMI270_ACC_RANGE       0x42
++#define BMI270_ACC_RANGE       0x41
+ #define BMI270_INIT_CTRL       0x59
+ #define BMI270_INIT_ADDR_0     0x5B
+ #define BMI270_INIT_ADDR_1     0x5C
+@@ -71,13 +71,41 @@ esp_err_t bmi270_init(i2c_master_bus_handle_t bus)
+     write_reg(BMI270_CMD, 0xB6); /* soft reset */
+     vTaskDelay(pdMS_TO_TICKS(20));
+ 
++    /* Advanced power save must be disabled before the config-file load (datasheet 4.4).
++       Wait for at least 450 us after switching it off (one FreeRTOS tick here). */
++    write_reg(BMI270_PWR_CONF, 0x00);  /* advanced power save off */
++    vTaskDelay(1);
++
+     upload_config();
+ 
+-    write_reg(BMI270_PWR_CONF, 0x00);  /* advanced power save off */
++    /* Config load is complete when INTERNAL_STATUS.message == 0x01 (datasheet 4.4). */
++    uint8_t status = 0;
++    for (int i = 0; i < 20; i++) {
++        if (read_regs(BMI270_INTERNAL_STATUS, &status, 1) == ESP_OK && (status & 0x0F) == 0x01) {
++            break;
++        }
++        vTaskDelay(1);
++    }
++    if ((status & 0x0F) != 0x01) {
++        ESP_LOGE(TAG, "config load failed, INTERNAL_STATUS=0x%02x", status);
++        return ESP_ERR_INVALID_STATE;
++    }
++
+     write_reg(BMI270_PWR_CTRL, 0x04);  /* accelerometer on */
+     write_reg(BMI270_ACC_CONF, 0xA8);  /* 100 Hz, normal mode */
+     write_reg(BMI270_ACC_RANGE, ACC_RANGE_2G);
+ 
++    /* The accelerometer reports a zero sample right after it is enabled; read until the
++       first real sample so the first logged line is already valid. */
++    for (int i = 0; i < 50; i++) {
++        uint8_t raw[6];
++        if (read_regs(BMI270_ACC_DATA, raw, sizeof raw) == ESP_OK &&
++            (raw[0] | raw[1] | raw[2] | raw[3] | raw[4] | raw[5]) != 0) {
++            break;
++        }
++        vTaskDelay(1);
++    }
++
+     ESP_LOGI(TAG, "init done");
+     return ESP_OK;
+ }

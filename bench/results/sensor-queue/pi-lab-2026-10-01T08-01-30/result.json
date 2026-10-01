@@ -1,0 +1,22 @@
+{
+  "scenario": "sensor-queue",
+  "agent": "pi-lab",
+  "docs": "full",
+  "model": "(default)",
+  "pass": true,
+  "detail": "90 readings reported in order with correct temperatures",
+  "minutes": 1.6,
+  "exitCode": 0,
+  "toolCalls": 18,
+  "flashes": 2,
+  "serialCaptures": 6,
+  "ledgerCalls": 5,
+  "kbCalls": 0,
+  "boardCalls": 0,
+  "tokens": {
+    "input": 6568,
+    "output": 5401
+  },
+  "costUsd": 0.0093,
+  "finalText": "## Root cause\n\n`sensor_task` put `char *` pointers on the queue, all pointing at its single stack buffer `line`:\n\n```c\nchar line[48];\n...\nsnprintf(line, sizeof line, \"seq=%\" PRIu32 \" temp=%d.%02d\", ...);\nchar *msg = line;\nxQueueSend(readings, &msg, ...);   // queues the pointer, not the text\n```\n\nThe queue only stored the pointer, so every queued item aliased the same buffer. `report_task` copies nothing when it receives — it waits 30 ms and then prints whatever the buffer holds *at print time*. The sensor (higher priority) had already overwritten `line` with the last sample of the burst, so each burst printed the same final `seq`/`temp` five times (e.g. `seq=39` ×5, `seq=44` ×5), and the intermediate readings were never reported. Reproduced on hardware before the fix.\n\n## Fix (`main/main.c`)\n\n- Queue now carries the message **by value**: created with item size `MSG_LEN` (48 bytes) via `xQueueCreate(QUEUE_LEN, MSG_LEN)`.\n- `sensor_task` sends `&line` (a copy of the text is made into the queue), so the buffer can be safely reused.\n- `report_task` receives into its own `char msg[MSG_LEN]` before delaying/printing.\n- `QUEUE_LEN` set to `FIFO_BURST` (5) so a full burst always fits.\n\nBurst size (5), burst interval (500 ms), and the `report seq=<n> temp=<t>` format are unchanged.\n\n## Verification on the board\n\nAfter reflashing, `serial_capture.py` over 12 s printed 120 reports: `seq=0 temp=20.00` through `seq=119`, strictly consecutive, no gaps, and zero \"queue full … dropped\" warnings."
+}

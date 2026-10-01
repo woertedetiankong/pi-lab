@@ -1,0 +1,22 @@
+{
+  "scenario": "imu-zeros",
+  "agent": "pi-lab-kb",
+  "docs": "full",
+  "model": "(default)",
+  "pass": true,
+  "detail": "|a| averages 0.997 g at rest over 33 readings",
+  "minutes": 9.9,
+  "exitCode": 0,
+  "toolCalls": 68,
+  "flashes": 10,
+  "serialCaptures": 16,
+  "ledgerCalls": 7,
+  "kbCalls": 13,
+  "boardCalls": 0,
+  "tokens": {
+    "input": 39026,
+    "output": 41345
+  },
+  "costUsd": 0.0754,
+  "finalText": "Fixed and verified on the board.\n\n## Root cause — two independent bugs in `main/bmi270.c`\n\n1. **All-zero output: the 8 kB config file was uploaded while advanced power save was still enabled.**\n   The datasheet order [BMI270-datasheet.pdf p.25] is: soft reset → `PWR_CONF.adv_power_save=0` → wait ≥450 µs → `INIT_CTRL=0x00` → burst the config to `INIT_DATA` → `INIT_CTRL=0x01`. The code uploaded the config first and only then disabled power save, so the load never completed. I proved this by reading `INTERNAL_STATUS` (0x21): it was `0x00` (should be `0x01`). After reordering, it read `0x01` and data became non-zero.\n\n2. **4× too small magnitude: wrong ACC_RANGE register address.**\n   `#define BMI270_ACC_RANGE 0x42` is `GYR_CONF`; ACC_RANGE is at **0x41** (`GYR_CONF` reset 0xA9) [BMI270-datasheet.pdf p.102]. So the range stayed at its ±8 g reset (4096 LSB/g) while the code divided by the ±2 g scale (16384 LSB/g) → `|a|` = 0.248 g. Reading back 0x42 gave 0x00 (the value written to GYR_CONF), which masked the bug.\n\n## What I changed\n- Moved `PWR_CONF=0x00` + a ≥450 µs wait **before** `upload_config()`.\n- Added the required `INTERNAL_STATUS.message == 0x01` poll after config load (returns an error otherwise).\n- Corrected `BMI270_ACC_RANGE` to `0x41`.\n- Added a warm-up read after enabling the accel (the sensor's first data read is always 0), so even the first log line is valid.\n\nLog format and 5 Hz `<x>` rate are unchanged; it still reads the real sensor.\n\n## Verified on the board (ESP-IDF v6.0.1, `/dev/cu.usbmodem101`)\n```\nI (98) bmi270: chip id 0x24\nI (458) bmi270: init done\naccel x=-0.028 y=-0.021 z=0.990 |a|=0.990\naccel x=-0.028 y=-0.022 z=0.997 |a|=0.998\naccel x=-0.027 y=-0.023 z=0.995 |a|=0.995   ...\n```\n`|a|` now stays 0.99–1.00 g at rest. Note `CONFIG_FREERTOS_HZ=100`, so `pdMS_TO_TICKS(2)` is 0 ticks — the 450 µs wait uses `vTaskDelay(1)` (10 ms). I also saved this as a knowledge-base note (`w-b3c7cbf0ec7d`)."
+}

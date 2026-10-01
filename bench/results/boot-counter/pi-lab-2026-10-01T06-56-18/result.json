@@ -1,0 +1,20 @@
+{
+  "scenario": "boot-counter",
+  "agent": "pi-lab",
+  "model": "(default)",
+  "pass": true,
+  "detail": "boot counts across three resets: [1, 2, 3]",
+  "minutes": 16.9,
+  "exitCode": 0,
+  "toolCalls": 140,
+  "flashes": 8,
+  "serialCaptures": 16,
+  "ledgerCalls": 9,
+  "kbCalls": 0,
+  "tokens": {
+    "input": 98273,
+    "output": 86764
+  },
+  "costUsd": 0.1985,
+  "finalText": "Done. Here's the summary.\n\n## Root cause\n\n`main/main.c`, `storage_init()`:\n\n```c\nif (err == ESP_ERR_NVS_NO_FREE_PAGES || ESP_ERR_NVS_NEW_VERSION_FOUND) {\n```\n\nThe second comparison is missing `err ==`. The preprocessed condition is:\n\n```c\nif (err == (0x1100 + 0x0d) || (0x1100 + 0x10))\n```\n\nSince `ESP_ERR_NVS_NEW_VERSION_FOUND` is the non‑zero constant `4368`, `A || 4368` is **always true**, so the branch body runs on every boot regardless of what `nvs_flash_init()` returned. The disassembly confirms it: `nvs_flash_erase()` is called unconditionally, right after `nvs_flash_init()`, with no comparison/branch (the debug log that printed `first nvs_flash_init -> ESP_OK (0)` yet still entered the branch was the tell).\n\nSo every reset wiped the NVS partition, `nvs_get_u32` returned `ESP_ERR_NVS_NOT_FOUND`, and the count was written back as `1` — which is exactly the reported `boot_count=1` forever. (I first verified the write path was fine: reading raw flash at `0x9000` showed a valid NVS page with correct CRCs and a WRITTEN entry table, so the data was being persisted correctly and then erased on the next boot.)\n\n## Fix\n\nOne line in `main/main.c`:\n\n```c\nif (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {\n```\n\nNo other changes; log format untouched. `sdkconfig` and the rest of the file were left exactly as they were originally.\n\n## Verified on the board\n\nRebuilt, reflashed, and reset repeatedly — `boot_count` now increments every reset:\n\n```\nboot_count=2 ... saved boot_count=2\nboot_count=3 ... saved boot_count=3\nboot_count=4 ... saved boot_count=4\nboot_count=5 ... saved boot_count=5\nboot_count=6 ... saved boot_count=6\n```\n\nRaw flash at `0x9000` confirms it: the entry table marks the `stats` namespace and the latest `boot_count` entry WRITTEN, with entries 1–5 ERASED holding the old values 1..5 and the newest entry = 6, i.e. normal NVS update/compaction. Rebuilt disassembly now emits the comparison and a conditional `nvs_flash_erase`."
+}

@@ -1,0 +1,44 @@
+diff --git a/main/main.c b/main/main.c
+index 8f246d2..2403f76 100644
+--- a/main/main.c
++++ b/main/main.c
+@@ -27,22 +27,29 @@ static void process_frame(void)
+ static void dsp_task(void *arg)
+ {
+     int frames = 0;
+-    int64_t window = esp_timer_get_time();
++    /* Report on an absolute 1 s schedule so the time spent logging does not
++     * shift the measurement window and add an extra frame to the count. */
++    int64_t next_report = esp_timer_get_time() + 1000000;
++    /* Delay against absolute frame deadlines on the tick grid. Sleeping for a
++     * millisecond remainder can round down to zero ticks (e.g. an 8 ms remainder
++     * at CONFIG_FREERTOS_HZ=100), which turns the sleep into a busy loop. */
++    const TickType_t period_ticks = pdMS_TO_TICKS(FRAME_PERIOD_MS);
++    TickType_t last_wake = xTaskGetTickCount();
+     for (;;) {
+-        int64_t start = esp_timer_get_time();
++        /* Block until the next frame deadline, giving the CPU to other tasks. */
++        vTaskDelayUntil(&last_wake, period_ticks);
++
+         process_frame();
+         frames++;
+ 
+-        /* Sleep for the rest of the frame period, giving the CPU to other tasks. */
+-        int elapsed_ms = (int)((esp_timer_get_time() - start) / 1000);
+-        if (elapsed_ms < FRAME_PERIOD_MS) {
+-            vTaskDelay(pdMS_TO_TICKS(FRAME_PERIOD_MS - elapsed_ms));
+-        }
+-
+-        if (esp_timer_get_time() - window >= 1000000) {
++        if (esp_timer_get_time() >= next_report) {
+             ESP_LOGI(TAG, "fps=%d", frames);
+             frames = 0;
+-            window = esp_timer_get_time();
++            next_report += 1000000;
++            int64_t now = esp_timer_get_time();
++            while (next_report <= now) {
++                next_report += 1000000;
++            }
+         }
+     }
+ }

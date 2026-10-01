@@ -1,0 +1,20 @@
+{
+  "scenario": "imu-zeros",
+  "agent": "pi-lab-kb",
+  "model": "(default)",
+  "pass": true,
+  "detail": "|a| averages 0.997 g at rest over 33 readings",
+  "minutes": 3.1,
+  "exitCode": 0,
+  "toolCalls": 40,
+  "flashes": 3,
+  "serialCaptures": 4,
+  "ledgerCalls": 7,
+  "kbCalls": 17,
+  "tokens": {
+    "input": 34205,
+    "output": 20911
+  },
+  "costUsd": 0.0397,
+  "finalText": "Done — root cause found and fixed on the board, verified at rest.\n\n## Root cause (two bugs in `main/bmi270.c`, both from misreading the BMI270 register map/init sequence)\n\n**Bug 1 — config load ran before advanced power save was disabled → all-zero data.**\nAfter reset the BMI270 sits in suspend with `PWR_CONF.adv_power_save = 1`. The datasheet requires disabling it (`PWR_CONF = 0x00`) *before* `INIT_CTRL = 0x00` and the config-file upload [BMI270-datasheet.pdf p.25] (pseudo-code on [BMI270-datasheet.pdf p.18]). The firmware uploaded the config first and wrote `PWR_CONF` afterwards, so the config load never took effect. `INTERNAL_STATUS` stayed not-init and the accelerometer registers read 0.\n\n**Bug 2 — `ACC_RANGE` defined as the wrong register → |a| 4× too small.**\n`ACC_RANGE` is register **0x41** (reset `0x02` = ±8g); **0x42 is `GYR_CONF`** [BMI270-datasheet.pdf p.102]. The code wrote `0x00` to `0x42`, so the accel stayed at its ±8g reset range while the code divided by 16384 LSB/g (±2g) — a factor-4 error.\n\n## What I changed (`main/bmi270.c`)\n- Moved `write_reg(BMI270_PWR_CONF, 0x00)` to **before** `upload_config()` (with the write's ≥450 µs delay already satisfied).\n- `#define BMI270_ACC_RANGE 0x41` (was `0x42`).\n- Set `ACC_CONF`/`ACC_RANGE` before enabling the accelerometer, and added a short delay so the first sample is valid.\n- Added an `INTERNAL_STATUS` log line (the accel log format is unchanged).\n\n## Evidence from the board\n- Before (commit `b8271b1` flashed): `chip id 0x24` … `accel x=0.000 y=0.000 z=0.000 |a|=0.000`.\n- After fixing only the init order: `internal status 0x01`, data flows but `|a|=0.248` (the predicted ¼ g).\n- After also fixing the range register: `internal status 0x01`, then `accel x=-0.028 y=-0.025 z=0.996 |a|=0.996` — gravity, as expected.\n\nThe full init order and both gotchas are saved as a project wiki note for future sessions."
+}

@@ -1,0 +1,20 @@
+{
+  "scenario": "imu-zeros",
+  "agent": "pi-lab-kb",
+  "model": "(default)",
+  "pass": true,
+  "detail": "|a| averages 0.997 g at rest over 33 readings",
+  "minutes": 6.1,
+  "exitCode": 0,
+  "toolCalls": 60,
+  "flashes": 8,
+  "serialCaptures": 11,
+  "ledgerCalls": 10,
+  "kbCalls": 14,
+  "tokens": {
+    "input": 33855,
+    "output": 29150
+  },
+  "costUsd": 0.0545,
+  "finalText": "Fixed on the board. Here is the root cause and what changed.\n\n## Root cause\n\nThe BMI270's 8 kB feature-config file was uploaded **before advanced power save (APS) was disabled**. After every reset `PWR_CONF` defaults to `0x03`, i.e. `adv_power_save = 1`. In that state the config load is rejected, so the device stays in `not_init` and its output registers hold zeros.\n\nI proved it by reading back `INTERNAL_STATUS` (0x21) on the board:\n\n- Original firmware: `INTERNAL_STATUS = 0x00` (**not_init**), raw `ACC_DATA` = `00 00 00 00 00 00` → `|a|=0.000`.\n- After moving `PWR_CONF=0x00` ahead of the upload: `INTERNAL_STATUS = 0x01` (**init_ok**), `|a| ≈ 0.996 g`.\n\nThe BMI270 datasheet requires this order: soft reset → `PWR_CONF=0x00` and wait ≥450 µs → `INIT_CTRL=0` → upload config → `INIT_CTRL=1` → wait for `INTERNAL_STATUS.message == 0b0001` [BMI270-datasheet.pdf p.25][BMI270-datasheet.pdf p.18]. The old code uploaded first and wrote `PWR_CONF=0x00` only afterwards.\n\n## What I changed (`main/bmi270.c`)\n\n1. **Init order** — moved `write_reg(BMI270_PWR_CONF, 0x00)` + 1 ms wait to *before* `upload_config()` (the actual cause of the zeros).\n2. **ACC_RANGE register address** — changed `0x42` to `0x41`. `0x42` is `GYR_CONF`; `ACC_RANGE` is `0x41` with reset `0x02` (±8 g) [BMI270-datasheet.pdf p.102], so the range write never applied (masked here only because `0x41` happened to read `0x00`).\n3. **Init verification** — read back `INTERNAL_STATUS` and return an error unless `message == 0x01`, instead of always returning `ESP_OK`.\n4. **First-sample handling** — set `ACC_CONF`/`ACC_RANGE` before enabling `PWR_CTRL.acc_en`, then poll `STATUS (0x03).drdy_acc` (bit 7) [BMI270-datasheet.pdf p.75] before the first read. On this board the first data-ready took ~250 ms (well over the 2 ms typ start-up), so a fixed delay left a leading `0.000` line. The log format is unchanged.\n\n## Verification on hardware\n\nFlashing the fixed build and capturing 10 s at rest:\n\n```\naccel x=-0.028 y=-0.023 z=0.990 |a|=0.991\naccel x=-0.027 y=-0.022 z=0.995 |a|=0.996\n...\nn=49  min=0.988  max=1.000  mean=0.996 g   (0 lines with |a|=0.000)\n```\n\nReal sensor, same `accel x=… y=… z=… |a|=…` format, magnitude now ≈1.00 g.\n\nI recorded the facts/hypotheses in the debug ledger and saved a knowledge-base note (`w-2441aa4de70a`) covering this BMI270 init-ordering gotcha."
+}

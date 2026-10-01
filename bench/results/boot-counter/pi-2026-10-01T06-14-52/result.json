@@ -1,0 +1,20 @@
+{
+  "scenario": "boot-counter",
+  "agent": "pi",
+  "model": "(default)",
+  "pass": true,
+  "detail": "boot counts across three resets: [1, 2, 3]",
+  "minutes": 4.3,
+  "exitCode": 0,
+  "toolCalls": 44,
+  "flashes": 4,
+  "serialCaptures": 9,
+  "ledgerCalls": 0,
+  "kbCalls": 0,
+  "tokens": {
+    "input": 22084,
+    "output": 20307
+  },
+  "costUsd": 0.0357,
+  "finalText": "## Root cause\n\nA C operator-precedence bug in the NVS initialization guard in `main/main.c`:\n\n```c\nif (err == ESP_ERR_NVS_NO_FREE_PAGES || ESP_ERR_NVS_NEW_VERSION_FOUND) {\n```\n\n`==` binds tighter than `||`, so this parses as:\n\n```c\nif ((err == ESP_ERR_NVS_NO_FREE_PAGES) || (ESP_ERR_NVS_NEW_VERSION_FOUND)) {\n```\n\n`ESP_ERR_NVS_NEW_VERSION_FOUND` is the non-zero constant `0x1110`, which is always truthy. The condition is therefore **always true**, so `nvs_flash_erase()` ran on *every* boot, wiping the namespace before it was read. `load_boot_count()` then always saw `ESP_ERR_NVS_NOT_FOUND` and started again at 1.\n\nI confirmed this on hardware by dumping the NVS partition: it parsed cleanly as `stats:boot_count = 1` (CRC OK), yet each boot logged `no boot count stored yet`. Adding a temporary log showed `nvs_flash_init` returning `ESP_OK` followed immediately by the erase branch — proof the `if` was taken unconditionally.\n\n## Fix\n\nAdded the missing comparison:\n\n```c\nif (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {\n```\n\nNow NVS is erased only on genuine `NO_FREE_PAGES` / `NEW_VERSION_FOUND` errors.\n\n## Verification on the board\n\nErased NVS, flashed the fixed firmware, and reset four times. The log now reads:\n\n```\nboot_count=1 ... saved boot_count=1\nboot_count=2 ... saved boot_count=2\nboot_count=3 ... saved boot_count=3\nboot_count=4 ... saved boot_count=4\n```\n\nThe `boot_count=%u (reset reason %d)` log format is unchanged. Diff is a one-line change in `main/main.c`."
+}

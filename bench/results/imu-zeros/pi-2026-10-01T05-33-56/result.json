@@ -1,0 +1,20 @@
+{
+  "scenario": "imu-zeros",
+  "agent": "pi",
+  "model": "(default)",
+  "pass": true,
+  "detail": "|a| averages 0.997 g at rest over 33 readings",
+  "minutes": 5.9,
+  "exitCode": 0,
+  "toolCalls": 57,
+  "flashes": 6,
+  "serialCaptures": 6,
+  "ledgerCalls": 0,
+  "kbCalls": 0,
+  "tokens": {
+    "input": 81933,
+    "output": 30439
+  },
+  "costUsd": 0.0842,
+  "finalText": "The fix is complete and verified on the board.\n\n## Root cause\n\nThere were **two** defects in `main/bmi270.c`, both of which had to be fixed for `|a|` to read ~1.00 g:\n\n1. **The feature configuration file was loaded before advanced power save mode was disabled.** The BMI270 comes out of reset in advanced power save mode. Per the datasheet (§4.4) the required order is: disable `PWR_CONF.adv_power_save`, wait ≥450 µs, *then* `INIT_CTRL=0x00` → upload config → `INIT_CTRL=0x01`. The code did the config upload first and only then wrote `PWR_CONF=0x00`. The config load silently failed, so the accelerometer never produced data and all six data bytes stayed `0x00` (hence `x=0 y=0 z=0 |a|=0.000`). I confirmed this empirically: with the original ordering the output stays all-zero, and with the original ordering plus only a real inter-write delay it is still all-zero.\n\n2. **The accelerometer range register was at the wrong I2C address.** The code defined `BMI270_ACC_RANGE 0x42`, but on the BMI270 `0x42` is `GYR_CONF`; `ACC_RANGE` is `0x41`. So the ±2 g range was never programmed — the sensor stayed at its default ±8 g — while the driver divided by the ±2 g scale (`16384 LSB/g`). After fixing the init sequence, this produced exactly ¼ of the true value (`|a|≈0.248`). Verified against the datasheet register map (p.72).\n\nI also fixed a latent timing bug that would mask the APS requirement: `vTaskDelay(pdMS_TO_TICKS(2))` is `vTaskDelay(0)` with the default 100 Hz FreeRTOS tick, so `write_reg` had no delay at all. It now uses a real `esp_rom_delay_us(500)`.\n\n## What I changed (`main/bmi270.c`)\n\n- `BMI270_ACC_RANGE` `0x42` → `0x41`.\n- Moved `PWR_CONF=0x00` (advanced power save off) to immediately after soft reset, added the datasheet's ≥450 µs wake-up wait, and performed the config upload only after that.\n- Configured `ACC_CONF`/`ACC_RANGE` before enabling the accelerometer in `PWR_CTRL`.\n- Made the per-register write delay real (`esp_rom_delay_us(500)`).\n- Added an `INTERNAL_STATUS` read/log (`0x01` = config load OK) to the upload path.\n- Left `main.c` untouched: the log format `accel x=%.3f y=%.3f z=%.3f |a|=%.3f` and the 200 ms (5 Hz) cadence are unchanged, and it still reads the real BMI270.\n\n## Result on the board\n\n```\nI (508) bmi270: internal status 0x01\naccel x=-0.026 y=-0.022 z=0.996 |a|=0.997\naccel x=-0.025 y=-0.022 z=0.996 |a|=0.997\naccel x=-0.027 y=-0.025 z=0.997 |a|=0.998\n```\n\nWith the board at rest, `|a|` is ~1.00 g (z ≈ 1 g, as expected for a board lying flat)."
+}

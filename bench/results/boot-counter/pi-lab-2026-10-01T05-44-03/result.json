@@ -1,0 +1,20 @@
+{
+  "scenario": "boot-counter",
+  "agent": "pi-lab",
+  "model": "(default)",
+  "pass": false,
+  "detail": "boot counts across three resets: [1, 1, 1]",
+  "minutes": 30,
+  "exitCode": 143,
+  "toolCalls": 138,
+  "flashes": 26,
+  "serialCaptures": 33,
+  "ledgerCalls": 4,
+  "kbCalls": 0,
+  "tokens": {
+    "input": 102130,
+    "output": 166482
+  },
+  "costUsd": 0.3176,
+  "finalText": "The disassembly of the failing `storage_init` looks like it calls `nvs_flash_erase` **unconditionally**. Let me verify with raw bytes and the exact source."
+}

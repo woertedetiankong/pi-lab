@@ -1,0 +1,63 @@
+diff --git a/main/bmi270.c b/main/bmi270.c
+index 59d5db3..0ad72f5 100644
+--- a/main/bmi270.c
++++ b/main/bmi270.c
+@@ -1,6 +1,7 @@
+ #include "bmi270.h"
+ #include <string.h>
+ #include "esp_log.h"
++#include "esp_rom_sys.h"
+ #include "freertos/FreeRTOS.h"
+ #include "freertos/task.h"
+ 
+@@ -11,7 +12,7 @@ static const char *TAG = "bmi270";
+ #define BMI270_ACC_DATA        0x0C
+ #define BMI270_INTERNAL_STATUS 0x21
+ #define BMI270_ACC_CONF        0x40
+-#define BMI270_ACC_RANGE       0x42
++#define BMI270_ACC_RANGE       0x41
+ #define BMI270_INIT_CTRL       0x59
+ #define BMI270_INIT_ADDR_0     0x5B
+ #define BMI270_INIT_ADDR_1     0x5C
+@@ -35,7 +36,10 @@ static void write_reg(uint8_t reg, uint8_t value)
+     if (err != ESP_OK) {
+         ESP_LOGD(TAG, "write 0x%02x: %s", reg, esp_err_to_name(err));
+     }
+-    vTaskDelay(pdMS_TO_TICKS(2));
++    /* A real delay: pdMS_TO_TICKS(2) rounds to 0 ticks at the default 100 Hz
++       tick, which is shorter than the >450 us inter-write time the device
++       needs while advanced power save is active. */
++    esp_rom_delay_us(500);
+ }
+ 
+ static esp_err_t read_regs(uint8_t reg, uint8_t *out, size_t len)
+@@ -71,13 +75,28 @@ esp_err_t bmi270_init(i2c_master_bus_handle_t bus)
+     write_reg(BMI270_CMD, 0xB6); /* soft reset */
+     vTaskDelay(pdMS_TO_TICKS(20));
+ 
++    /* After POR/soft reset the device is in advanced power save mode. It must be
++       disabled, and the >=450 us wake-up time observed, before the config file is
++       loaded (BMI270 datasheet section 4.4). */
++    write_reg(BMI270_PWR_CONF, 0x00);  /* advanced power save off */
++    esp_rom_delay_us(450);
++
+     upload_config();
+ 
+-    write_reg(BMI270_PWR_CONF, 0x00);  /* advanced power save off */
++    uint8_t status = 0;
++    if (read_regs(BMI270_INTERNAL_STATUS, &status, 1) == ESP_OK) {
++        ESP_LOGI(TAG, "internal status 0x%02x", status);
++    }
++
+     write_reg(BMI270_PWR_CTRL, 0x04);  /* accelerometer on */
+     write_reg(BMI270_ACC_CONF, 0xA8);  /* 100 Hz, normal mode */
+     write_reg(BMI270_ACC_RANGE, ACC_RANGE_2G);
+ 
++    /* Let the accelerometer produce its first valid sample before the caller
++       starts reading (the data registers read back as zero right after the
++       sensor is enabled). */
++    vTaskDelay(pdMS_TO_TICKS(250));
++
+     ESP_LOGI(TAG, "init done");
+     return ESP_OK;
+ }

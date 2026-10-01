@@ -1,0 +1,22 @@
+{
+  "scenario": "racy-ring",
+  "agent": "pi-lab",
+  "docs": "full",
+  "model": "(default)",
+  "pass": true,
+  "detail": "12033 samples intact and in order (1003/s), no drops",
+  "minutes": 3.5,
+  "exitCode": 0,
+  "toolCalls": 38,
+  "flashes": 3,
+  "serialCaptures": 9,
+  "ledgerCalls": 9,
+  "kbCalls": 0,
+  "boardCalls": 0,
+  "tokens": {
+    "input": 12910,
+    "output": 16878
+  },
+  "costUsd": 0.0264,
+  "finalText": "Done. The board now reports clean stats continuously.\n\n## Root cause\n\nTwo bugs in the single-producer/single-consumer ring (`main/ring.c` / `ring.h`):\n\n1. **Premature publish (the tearing race).** `rb_push()` advanced `head` *before* writing the slot:\n   ```c\n   uint32_t slot = head;\n   head = (slot + 1) % RB_SIZE;   // consumer can now pop this slot...\n   slots[slot] = *s;              // ...before it is written\n   slots[slot].crc = ...\n   ```\n   The 1 kHz sampler runs in the esp_timer task on CPU0 while the monitor runs on CPU1, so the consumer regularly popped a slot mid-write. That produced the torn payloads (`crc_err`) and the seq jumps (`gaps`) seen in the baseline (~170–200 errors/s). The writes were also only `volatile`, with no release/acquire ordering.\n\n2. **Off-by-one full check.** `if (rb_count() > RB_SIZE - 1)` never rejects a genuinely full ring: at `count == 63` it wrapped `head` onto `tail`, making the ring look empty and silently losing the buffered samples. Instrumentation (`DBG maxcount=63`) showed occupancy really reaches the old capacity during the monitor's 80 ms storage write, so once the full test is made correct the 64-slot ring would start dropping.\n\n## What I changed\n\nOnly `main/ring.c` and `main/ring.h` (monitor.c, sample.h, the 1 kHz period, and the 80 ms write are untouched):\n\n- **Fill then publish.** `rb_push()` now writes the whole slot and its CRC first, then advances `head` with a `memory_order_release` store. `rb_pop()` acquire-loads `head` before reading the slot and releases `tail` after. `head`/`tail`/`dropped` are now `_Atomic uint32_t` (C11 atomics), replacing the weakly-ordered `volatile` accesses.\n- **Correct full detection.** Uses the standard \"one slot free\" rule: reject when `(head + 1) % RB_SIZE == tail`, so empty (`head == tail`) and full are distinct.\n- **Sized for the burst.** `RB_SIZE` raised from 64 to 256 (255 usable), enough to absorb the ~80 samples produced while the monitor is blocked in its 80 ms storage write plus scheduling jitter.\n\n## Verification\n\nFlashed (ELF SHA256 `541e59e67…`), then 30 s serial capture: 28 consecutive reports, every one `stats ok=<n> crc_err=0 gaps=0 dropped=0`, with `ok` advancing ~1000/s — the 1 kHz rate is intact."
+}

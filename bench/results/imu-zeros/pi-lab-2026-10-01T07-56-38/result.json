@@ -1,0 +1,22 @@
+{
+  "scenario": "imu-zeros",
+  "agent": "pi-lab",
+  "docs": "full",
+  "model": "(default)",
+  "pass": true,
+  "detail": "|a| averages 0.996 g at rest over 33 readings",
+  "minutes": 3.9,
+  "exitCode": 0,
+  "toolCalls": 40,
+  "flashes": 5,
+  "serialCaptures": 8,
+  "ledgerCalls": 9,
+  "kbCalls": 0,
+  "boardCalls": 0,
+  "tokens": {
+    "input": 28686,
+    "output": 19485
+  },
+  "costUsd": 0.0366,
+  "finalText": "Root cause found and fixed on the board. Final serial output confirms it:\n\n```\nI (98) bmi270: chip id 0x24\nI (538) bmi270: init done\naccel x=-0.028 y=-0.022 z=0.996 |a|=0.996\naccel x=-0.027 y=-0.021 z=0.995 |a|=0.995\n...\n```\n\n## Root cause\n\nThere were **two bugs** in `main/bmi270.c`, and the first one is why `|a|` was `0.000`.\n\n**1. Config-file upload ran with advanced power save still enabled (cause of the zeros).**\nThe BMI270 requires this order after reset: disable `PWR_CONF.adv_power_save` (write `0x7C=0x00`, wait ≥450 µs), *then* `INIT_CTRL=0x00` → burst-write the 8 kB config → `INIT_CTRL=0x01`. The code instead called `upload_config()` first and only wrote `PWR_CONF=0x00` afterwards. Because `PWR_CONF` resets to `0x03` after the soft reset, the init upload never completed: I read `INTERNAL_STATUS=0x00` (`not_init`), so the accelerometer produced no valid samples and the data registers stayed zero. I confirmed this by moving the `PWR_CONF` write before the upload — `INTERNAL_STATUS` became `0x01` (`init_ok`) and real values appeared.\n\n**2. `ACC_RANGE` was written to the wrong register (cause of the wrong scale).**\n`ACC_RANGE` is at **0x41** (reset `0x02` = ±8g); **0x42** is `GYR_CONF` (reset `0xA9`). The code defined `BMI270_ACC_RANGE` as `0x42`, so the accelerometer stayed at its ±8g power-on range while the driver divided counts by the ±2g constant `16384 LSB/g`. That made `|a|` read ~0.25 g. Writing `0x00` into `GYR_CONF` also raised a gyro-config error (`EVENT error_code = gyr_err`). After correcting the address, `|a|` reads ≈1.00 g.\n\n## What I changed\n\nIn `main/bmi270.c`:\n- Moved `PWR_CONF=0x00` plus a ≥450 µs wait to **before** `upload_config()`.\n- Fixed `#define BMI270_ACC_RANGE` from `0x42` to `0x41`.\n- Added an `INTERNAL_STATUS` check after init (returns `ESP_FAIL` instead of silently streaming zeros).\n- Added a 100 ms wait after init so the first logged sample isn't a stale `0.000`.\n\nThe log format (`accel x=... y=... z=... |a|=...`), the 5 Hz read loop, and reading the real BMI270 over I²C are all unchanged. Flashed and verified on `/dev/cu.usbmodem101`."
+}

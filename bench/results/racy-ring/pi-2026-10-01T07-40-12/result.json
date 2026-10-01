@@ -1,0 +1,22 @@
+{
+  "scenario": "racy-ring",
+  "agent": "pi",
+  "docs": "full",
+  "model": "(default)",
+  "pass": true,
+  "detail": "12033 samples intact and in order (1003/s), no drops",
+  "minutes": 2.3,
+  "exitCode": 0,
+  "toolCalls": 26,
+  "flashes": 2,
+  "serialCaptures": 6,
+  "ledgerCalls": 0,
+  "kbCalls": 0,
+  "boardCalls": 0,
+  "tokens": {
+    "input": 8494,
+    "output": 8974
+  },
+  "costUsd": 0.0144,
+  "finalText": "Root cause found and fixed, verified on the board.\n\n## Root cause\n\nThe ring buffer in `main/ring.c` was not a correct single-producer/single-consumer queue. Three compounding defects:\n\n1. **Published-before-written slot (the `crc_err` source).** `rb_push` advanced `head` *before* copying the sample in, and stamped the CRC only afterward:\n   ```c\n   uint32_t slot = head;\n   head = (slot + 1) % RB_SIZE;   // consumer can now see this slot\n   slots[slot] = *s;              // ...while it is still being filled\n   slots[slot].crc = sample_crc(&slots[slot]);\n   ```\n   The monitor task could pop the slot mid-copy and compute a CRC over a torn sample → `crc_err`. The bad slot also disrupted the `seq` bookkeeping → matching `gaps`.\n\n2. **Full-detection was dead code (`gaps`, and `dropped` stuck at 0).** `rb_count()` returns `(head - tail) % RB_SIZE`, so it can never exceed `RB_SIZE-1`. The guard `if (rb_count() > RB_SIZE - 1)` therefore could never fire: the ring *always* overwrote the oldest unread sample and never incremented `dropped`. That's why the baseline showed constant `gaps`/`crc_err` but `dropped=0`.\n\n3. **No memory ordering.** `volatile` doesn't stop the compiler/CPU from reordering the 64-byte struct copy against the `head`/`tail` updates, so stale/partial data could be published even without a visible overlap.\n\n4. **Capacity too small.** The monitor blocks 80 ms once a second on the storage write; at 1 kHz that's 80 samples. The old usable capacity was only 63, so even a correct ring would overflow. This is the part that can't be fixed in `monitor.c` (must keep the 80 ms write), so the ring was enlarged.\n\n## What I changed\n\n- **`main/ring.c`** — rewrote as a proper SPSC ring:\n  - Fill the slot completely (CRC included) *first*, then publish it with `atomic_store_explicit(&head, ..., memory_order_release)`.\n  - Consumer loads `head` with `memory_order_acquire` before reading the slot, and releases `tail` after reading it.\n  - Correct full test: `next == tail` (leave one slot free so `head==tail` means empty), with `dropped` incremented atomically.\n  - Removed the racy `rb_count()`.\n- **`main/ring.h`** — `RB_SIZE` 64 → 256, so the ~80 samples produced during the 80 ms storage write fit with margin.\n\nNo changes to `main/monitor.c` or `main/sample.h`; the 1 kHz `esp_timer` period and the 80 ms simulated write are untouched.\n\n## Verification (board, `/dev/cu.usbmodem101`)\n\nBefore: `stats ok=808 crc_err=195 gaps=195 dropped=0` (≈20% corrupt).\nAfter a 30 s soak: every report shows `ok≈1000/s`, `crc_err=0 gaps=0 dropped=0`, e.g.\n```\nstats ok=1003 crc_err=0 gaps=0 dropped=0\n...\nstats ok=29367 crc_err=0 gaps=0 dropped=0\n```"
+}

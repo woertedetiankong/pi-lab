@@ -1,0 +1,20 @@
+{
+  "scenario": "sensor-queue",
+  "agent": "pi-lab",
+  "model": "(default)",
+  "pass": true,
+  "detail": "90 readings reported in order with correct temperatures",
+  "minutes": 1.9,
+  "exitCode": 0,
+  "toolCalls": 22,
+  "flashes": 2,
+  "serialCaptures": 5,
+  "ledgerCalls": 7,
+  "kbCalls": 0,
+  "tokens": {
+    "input": 11797,
+    "output": 5634
+  },
+  "costUsd": 0.0113,
+  "finalText": "## Root cause\n\nThe queue carried `char *` pointers, but `sensor_task` had a **single stack buffer `line`** that it overwrote on every iteration:\n\n```c\nchar line[48];\n...\nsnprintf(line, ...);      // same buffer reused each reading\nchar *msg = line;\nxQueueSend(readings, &msg, ...);   // only the address is queued\n```\n\nBecause `sensor_task` has higher priority than `report_task`, it fills the whole 5-reading burst before the reporter drains anything. All five queued pointers therefore alias the *same* memory, which by then holds only the last reading of the burst. The reporter then printed that one reading five times. Observed on the board:\n\n```\nreport seq=4 temp=21.48   (x5)\nreport seq=9 temp=20.33   (x5)\nreport seq=14 temp=22.18  (x5)\n```\n\nSo each burst appeared as its last sample repeated, and all earlier samples were silently lost.\n\n## Fix (`main/main.c`)\n\nMade the queue carry the reading **by value** instead of by pointer:\n\n- Added `typedef struct { char text[LINE_LEN]; } reading_msg_t;`\n- `sensor_task` formats into a local `reading_msg_t msg` and sends `&msg`; `xQueueSend` copies the contents into the queue slot.\n- `report_task` receives into its own `reading_msg_t msg` and prints `msg.text`.\n- Queue created with `sizeof(reading_msg_t)`.\n\nBurst size (5), burst interval (500 ms), and the `report seq=<n> temp=<t>` line format are unchanged.\n\n## Verification\n\nAfter flashing, the board prints every reading exactly once, strictly in order with distinct temperatures:\n\n```\nreport seq=0 temp=20.00\nreport seq=1 temp=20.37\nreport seq=2 temp=20.74\n...\n```\n\nA second capture showed 60 consecutive lines, seq 0–59 with no gaps and no `queue full` drops."
+}

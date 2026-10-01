@@ -1,0 +1,20 @@
+{
+  "scenario": "imu-zeros",
+  "agent": "pi-lab",
+  "model": "(default)",
+  "pass": true,
+  "detail": "|a| averages 0.997 g at rest over 32 readings",
+  "minutes": 6.7,
+  "exitCode": 0,
+  "toolCalls": 60,
+  "flashes": 6,
+  "serialCaptures": 11,
+  "ledgerCalls": 14,
+  "kbCalls": 0,
+  "tokens": {
+    "input": 40776,
+    "output": 29054
+  },
+  "costUsd": 0.0559,
+  "finalText": "Root cause found and fixed on the board. The firmware was built, flashed to `/dev/cu.usbmodem101`, and verified.\n\n## Root cause\n\nThe primary bug is the **BMI270 initialization order**. After POR/soft reset the chip sits in advanced power-save mode (`PWR_CONF` reset = `0x03`, so `adv_power_save=1`). The datasheet (§4.4, flow p.18) requires:\n\n1. `PWR_CONF = 0x00` (disable advanced power save)\n2. wait ≥ 450 µs\n3. `INIT_CTRL = 0x00`, **then** upload the 8 kB config file to `INIT_DATA`\n4. `INIT_CTRL = 0x01`, then verify `INTERNAL_STATUS == 0x01`\n\nThe code did the config upload **first** and only wrote `PWR_CONF = 0x00` afterwards, so the config load didn't take. Without its config the BMI270 produces no data, which is why every read was exactly `0.000`.\n\nA **second, hidden bug** sat behind it: `BMI270_ACC_RANGE` was defined as `0x42`, which is actually `GYR_CONF`; the real `ACC_RANGE` register is `0x41`. The accelerometer therefore stayed at its reset range of ±8 g while the driver divided raw counts by 16384 (2 g LSB/g) — gravity would have read ≈0.25 g. It was masked until the config bug was fixed; I isolated it by reverting only that define and observed `|a| = 0.248 g`.\n\nA third defect: the inter-register delay was `vTaskDelay(pdMS_TO_TICKS(2))` = **0 ticks** at `CONFIG_FREERTOS_HZ=100`, so intended delays never happened (the original init finished in ~290 ms where the 384 writes × 2 ms would have taken ~770 ms).\n\n## Changes (all in `main/bmi270.c`)\n\n- Reordered init to the datasheet sequence: soft reset → `PWR_CONF=0x00` → 450 µs wait → `INIT_CTRL=0x00` → config upload → `INIT_CTRL=0x01` → read/verify `INTERNAL_STATUS`.\n- Corrected `BMI270_ACC_RANGE` from `0x42` to `0x41`; it is set to `0x00` (±2 g), matching the 16384 LSB/g conversion.\n- Replaced the no-op `vTaskDelay(pdMS_TO_TICKS(2))` with a real `esp_rom_delay_us(500)`.\n- Added an `INTERNAL_STATUS` log (`0x01` = init_ok) and a short settle delay after enabling the sensor so the first logged sample is valid.\n\n`main.c` and the log format are untouched, and it still reads the real sensor at register `0x0C`.\n\n## Verification on hardware\n\n```\nI (508) bmi270: internal status 0x01\nI (758) bmi270: init done\naccel x=-0.028 y=-0.025 z=0.997 |a|=0.998\naccel x=-0.029 y=-0.024 z=0.997 |a|=0.998\n...\n```\n\n12 s capture: **57 samples, 0 zeros, mean |a| = 0.9966 g** (min 0.995, max 0.998) — consistent with gravity at rest."
+}

@@ -1,0 +1,43 @@
+diff --git a/main/main.c b/main/main.c
+index 8f246d2..32d25f7 100644
+--- a/main/main.c
++++ b/main/main.c
+@@ -28,22 +28,26 @@ static void dsp_task(void *arg)
+ {
+     int frames = 0;
+     int64_t window = esp_timer_get_time();
++    TickType_t last_wake = xTaskGetTickCount();
+     for (;;) {
+-        int64_t start = esp_timer_get_time();
+-        process_frame();
+-        frames++;
+-
+-        /* Sleep for the rest of the frame period, giving the CPU to other tasks. */
+-        int elapsed_ms = (int)((esp_timer_get_time() - start) / 1000);
+-        if (elapsed_ms < FRAME_PERIOD_MS) {
+-            vTaskDelay(pdMS_TO_TICKS(FRAME_PERIOD_MS - elapsed_ms));
+-        }
+-
+-        if (esp_timer_get_time() - window >= 1000000) {
+-            ESP_LOGI(TAG, "fps=%d", frames);
++        /* Sample the count at the top of the frame slot so the measurement
++         * window is exactly the frame period (1000 ms) and not rounded up. */
++        int64_t elapsed = esp_timer_get_time() - window;
++        if (elapsed >= 1000000) {
++            int fps = (int)((frames * 1000000LL + elapsed / 2) / elapsed);
++            ESP_LOGI(TAG, "fps=%d", fps);
+             frames = 0;
+             window = esp_timer_get_time();
+         }
++
++        process_frame();
++        frames++;
++
++        /* Pace against an absolute deadline so every frame is a full
++         * FRAME_PERIOD_MS (exactly 2 ticks at CONFIG_FREERTOS_HZ=100).
++         * Computing the leftover ms and converting it with pdMS_TO_TICKS()
++         * truncated the ~8 ms remainder to 0 ticks, so the task never slept. */
++        vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(FRAME_PERIOD_MS));
+     }
+ }
+ 

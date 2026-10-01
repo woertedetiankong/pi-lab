@@ -1,0 +1,22 @@
+{
+  "scenario": "racy-ring",
+  "agent": "pi-lab",
+  "docs": "full",
+  "model": "(default)",
+  "pass": true,
+  "detail": "12033 samples intact and in order (1003/s), no drops",
+  "minutes": 3.2,
+  "exitCode": 0,
+  "toolCalls": 29,
+  "flashes": 3,
+  "serialCaptures": 10,
+  "ledgerCalls": 11,
+  "kbCalls": 0,
+  "boardCalls": 0,
+  "tokens": {
+    "input": 46908,
+    "output": 12173
+  },
+  "costUsd": 0.0336,
+  "finalText": "Done. The fix is flashed and the board is verified clean for a 30 s soak (`ok≈1000/s, crc_err=0, gaps=0, dropped=0`).\n\n## Root cause\n\n`main/ring.c` was a broken single-producer/single-consumer ring buffer. The producer (esp_timer callback on CPU0) and consumer (monitor task pinned to CPU1) run concurrently, and the buffer violated the SPSC contract in two ways:\n\n1. **Published the slot before filling it.** `rb_push()` advanced `head` first and only then copied the sample and computed its CRC:\n   ```c\n   uint32_t slot = head;\n   head = (slot + 1) % RB_SIZE;   // consumer can now see this slot\n   slots[slot] = *s;              // ...but it is still being written\n   slots[slot].crc = sample_crc(&slots[slot]);\n   ```\n   The monitor would `rb_pop()` a half-written or stale slot, producing torn `value`/`payload`/`seq` → `crc_err` and `gaps`. There was also no release/acquire fence between the two CPUs, so even completed writes could be reordered/unseen.\n\n2. **The \"full\" check could never fire.** `rb_count()` returns `(head - tail + RB_SIZE) % RB_SIZE`, which is always in `0..RB_SIZE-1`, so `rb_count() > RB_SIZE - 1` was always false. The producer silently overwrote unread slots and `dropped` stayed pinned at 0 — corruption was hidden as `crc_err`/`gaps` instead of drops.\n\nThis matches the board: baseline was `ok≈750/s, crc_err≈180/s, gaps≈180/s, dropped=0`; with only the ordering fix it became `crc_err=0, gaps=0, dropped≈20/s`; with the full-check fixed the drops were real.\n\n3. **The ring was too small for the fixed design.** The monitor blocks 80 ms once per second for the storage write while the sampler keeps producing 1 kHz → ~80 samples must be buffered. A 64-slot ring cannot hold that.\n\n## What I changed\n\nOnly `main/ring.c` and `main/ring.h` (monitor.c and sample.h untouched; sample rate and 80 ms write unchanged):\n\n- **`ring.c`:** fill the whole slot (including CRC) first, then publish it by advancing `head` behind an `atomic_thread_fence(memory_order_release)`; the consumer reads `head`, then uses an acquire fence before touching the slot and a release fence before advancing `tail`.\n- **`ring.c`:** correct full detection `next == tail` (one slot kept empty), so overwrites can't happen and `dropped` is reported honestly.\n- **`ring.h`:** `RB_SIZE` 64 → 256 so the ring absorbs the ~80-sample burst produced during the 80 ms flush.\n\nResult on hardware: `stats ok=1003 crc_err=0 gaps=0 dropped=0` and steady ~1000 samples/s for 30 s."
+}

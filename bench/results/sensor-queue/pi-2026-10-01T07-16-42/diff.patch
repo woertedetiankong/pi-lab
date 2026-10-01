@@ -1,0 +1,59 @@
+diff --git a/main/main.c b/main/main.c
+index 148bd27..3bee55c 100644
+--- a/main/main.c
++++ b/main/main.c
+@@ -9,7 +9,14 @@ static const char *TAG = "sensor";
+ 
+ #define FIFO_BURST        5    /* readings the sensor FIFO holds per burst */
+ #define BURST_INTERVAL_MS 500
+-#define QUEUE_LEN         4
++#define QUEUE_LEN         FIFO_BURST
++
++/* A reading is copied into the queue by value. Passing a pointer to a shared
++ * buffer would let the sensor task overwrite it before the report task reads it. */
++typedef struct {
++    uint32_t seq;
++    int temp;   /* centi-degrees */
++} reading_t;
+ 
+ static QueueHandle_t readings;
+ 
+@@ -21,13 +28,10 @@ static int fake_temperature(uint32_t seq)
+ 
+ static void sensor_task(void *arg)
+ {
+-    char line[48];
+     uint32_t seq = 0;
+     for (;;) {
+         for (int i = 0; i < FIFO_BURST; i++, seq++) {
+-            int t = fake_temperature(seq);
+-            snprintf(line, sizeof line, "seq=%" PRIu32 " temp=%d.%02d", seq, t / 100, t % 100);
+-            char *msg = line;
++            reading_t msg = { .seq = seq, .temp = fake_temperature(seq) };
+             if (xQueueSend(readings, &msg, pdMS_TO_TICKS(10)) != pdTRUE) {
+                 ESP_LOGW(TAG, "queue full, reading %" PRIu32 " dropped", seq);
+             }
+@@ -38,19 +42,20 @@ static void sensor_task(void *arg)
+ 
+ static void report_task(void *arg)
+ {
+-    char *msg;
++    reading_t msg;
+     for (;;) {
+         if (xQueueReceive(readings, &msg, portMAX_DELAY) == pdTRUE) {
+             /* Uploading a report takes a while. */
+             vTaskDelay(pdMS_TO_TICKS(30));
+-            printf("report %s\n", msg);
++            printf("report seq=%" PRIu32 " temp=%d.%02d\n",
++                   msg.seq, msg.temp / 100, msg.temp % 100);
+         }
+     }
+ }
+ 
+ void app_main(void)
+ {
+-    readings = xQueueCreate(QUEUE_LEN, sizeof(char *));
++    readings = xQueueCreate(QUEUE_LEN, sizeof(reading_t));
+     xTaskCreate(report_task, "report", 3072, NULL, 4, NULL);
+     xTaskCreate(sensor_task, "sensor", 3072, NULL, 5, NULL);
+ }

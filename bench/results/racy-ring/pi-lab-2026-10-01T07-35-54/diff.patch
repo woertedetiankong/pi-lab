@@ -1,0 +1,88 @@
+diff --git a/main/ring.c b/main/ring.c
+index ff43f97..a88caaf 100644
+--- a/main/ring.c
++++ b/main/ring.c
+@@ -1,40 +1,49 @@
+ #include "ring.h"
++#include <stdatomic.h>
+ 
+ static sample_t slots[RB_SIZE];
+-static volatile uint32_t head; /* next slot the producer writes */
+-static volatile uint32_t tail; /* next slot the consumer reads */
+-static volatile uint32_t dropped;
+ 
+-static uint32_t rb_count(void)
+-{
+-    return (head - tail + RB_SIZE) % RB_SIZE;
+-}
++/* SPSC protocol:
++ *   producer: read tail (acquire) -> write slots[head] -> store head (release)
++ *   consumer: read head (acquire) -> read slots[tail] -> store tail (release)
++ * The release store publishes the slot contents; the acquire load makes them visible. The
++ * producer must NOT advance head before the slot is filled, or the consumer can pop a slot that
++ * is still being written (torn payload -> CRC error, wrong seq -> gap).
++ * head == tail means empty; one slot is always left free so full is distinguishable from empty.
++ */
++static _Atomic uint32_t head; /* next slot the producer writes */
++static _Atomic uint32_t tail; /* next slot the consumer reads */
++static _Atomic uint32_t dropped;
+ 
+ bool rb_push(const sample_t *s)
+ {
+-    if (rb_count() > RB_SIZE - 1) {
+-        dropped++;
++    uint32_t h = atomic_load_explicit(&head, memory_order_relaxed);
++    uint32_t t = atomic_load_explicit(&tail, memory_order_acquire);
++    uint32_t next = (h + 1) % RB_SIZE;
++    if (next == t) {
++        atomic_fetch_add_explicit(&dropped, 1, memory_order_relaxed);
+         return false;
+     }
+-    /* Claim the slot first so the consumer can start on it right away, then fill it in. */
+-    uint32_t slot = head;
+-    head = (slot + 1) % RB_SIZE;
+-    slots[slot] = *s;
+-    slots[slot].crc = sample_crc(&slots[slot]);
++    /* Fill the claimed slot completely, then publish it by advancing head. */
++    slots[h] = *s;
++    slots[h].crc = sample_crc(&slots[h]);
++    atomic_store_explicit(&head, next, memory_order_release);
+     return true;
+ }
+ 
+ bool rb_pop(sample_t *out)
+ {
+-    if (rb_count() == 0) {
++    uint32_t t = atomic_load_explicit(&tail, memory_order_relaxed);
++    uint32_t h = atomic_load_explicit(&head, memory_order_acquire);
++    if (h == t) {
+         return false;
+     }
+-    *out = slots[tail];
+-    tail = (tail + 1) % RB_SIZE;
++    *out = slots[t];
++    atomic_store_explicit(&tail, (t + 1) % RB_SIZE, memory_order_release);
+     return true;
+ }
+ 
+ uint32_t rb_dropped(void)
+ {
+-    return dropped;
++    return atomic_load_explicit(&dropped, memory_order_relaxed);
+ }
+diff --git a/main/ring.h b/main/ring.h
+index 73e8c55..957e03d 100644
+--- a/main/ring.h
++++ b/main/ring.h
+@@ -5,7 +5,10 @@
+ 
+ /* Single-producer, single-consumer ring buffer of samples. */
+ 
+-#define RB_SIZE 64
++/* The monitor blocks for up to 80 ms per second writing a batch to storage, while the 1 kHz
++ * sampler keeps producing. Keep enough slots to absorb that burst (plus scheduling jitter) with
++ * room to spare. One slot is kept free to distinguish full from empty. */
++#define RB_SIZE 256
+ 
+ /* Producer side (sampler). Stamps the sample's CRC. Returns false and counts a drop when the ring is full. */
+ bool rb_push(const sample_t *s);

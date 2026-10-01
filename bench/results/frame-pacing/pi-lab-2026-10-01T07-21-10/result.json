@@ -1,0 +1,20 @@
+{
+  "scenario": "frame-pacing",
+  "agent": "pi-lab",
+  "model": "(default)",
+  "pass": true,
+  "detail": "fps readings: [50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50]",
+  "minutes": 4.3,
+  "exitCode": 0,
+  "toolCalls": 28,
+  "flashes": 4,
+  "serialCaptures": 7,
+  "ledgerCalls": 6,
+  "kbCalls": 0,
+  "tokens": {
+    "input": 43752,
+    "output": 16648
+  },
+  "costUsd": 0.0387,
+  "finalText": "## Root cause\n\nThe `dsp` task paced itself with a *relative* delay computed in whole milliseconds:\n\n```c\nint elapsed_ms = (int)((esp_timer_get_time() - start) / 1000);\nvTaskDelay(pdMS_TO_TICKS(FRAME_PERIOD_MS - elapsed_ms));   // pdMS_TO_TICKS(8)\n```\n\nThe project runs with `CONFIG_FREERTOS_HZ=100`, i.e. a **10 ms tick**. `pdMS_TO_TICKS(8)` truncates to **0 ticks**, so `vTaskDelay(0)` never actually blocks. The loop free-ran back-to-back at the ~12 ms cost of `process_frame()`, giving **fps≈84** instead of 50. Because the task never blocked and it is the highest-priority ready task on core 0, `IDLE0` was never scheduled, so the enabled task watchdog reported `IDLE0 (CPU 0) did not reset the watchdog` every 5 s (with `CPU 0: dsp` running). The 20 ms period was simply not representable by the relative-remainder approach at a 10 ms tick.\n\nBaseline reproduced on hardware: `dsp: fps=84` and repeated `task_wdt: IDLE0` errors.\n\n## What I changed (`main/main.c`)\n\n- Replaced the relative remainder delay with **absolute-deadline pacing**: `vTaskDelayUntil(&last_wake, FRAME_PERIOD_TICKS)` where `FRAME_PERIOD_TICKS = pdMS_TO_TICKS(20)` = 2 ticks. This blocks for the ~8 ms remainder each frame, so `IDLE0` gets to run and the period is exactly 20 ms.\n- Fixed the fps meter to advance its window by exactly `1000000` µs (and to start on the first frame boundary), so the blocking log time and the startup frame can't inflate the count.\n\nDeliberately untouched: `process_frame()`/`WORK_US` (work per frame is unchanged), and `sdkconfig`/`sdkconfig.defaults` (the task watchdog stays fully enabled with its 5 s timeout and idle-task checks). The fix is purely the pacing/accounting logic.\n\n## Verification on the board\n\n- Before: `dsp: fps=84` + `task_wdt: IDLE0` every 5 s.\n- After flashing: a 32-second capture shows **31/31 readings of `fps=50`** and **zero watchdog lines**."
+}

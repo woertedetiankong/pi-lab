@@ -1,0 +1,20 @@
+{
+  "scenario": "leaky-uplink",
+  "agent": "pi-lab",
+  "model": "(default)",
+  "pass": true,
+  "detail": "ran 20 s without crashing, 50 frames/s, free heap 391916 -> 391916",
+  "minutes": 1.8,
+  "exitCode": 0,
+  "toolCalls": 17,
+  "flashes": 2,
+  "serialCaptures": 3,
+  "ledgerCalls": 5,
+  "kbCalls": 0,
+  "tokens": {
+    "input": 21832,
+    "output": 4541
+  },
+  "costUsd": 0.0129,
+  "finalText": "## Root cause\n\n`send_with_retry()` in `main/main.c` leaked memory on every failed send. Per the `link.h` contract, `link_send()` only takes ownership of `pkt.data` on `ESP_OK`; on error the **caller keeps ownership**. The code allocated a fresh encoded buffer with `encode_frame()` on every attempt but never freed it when `link_send()` returned an error.\n\nSince the simulated radio is busy every 5th call, ~10 failed attempts/s × 4104 bytes (`FRAME_SIZE` + 8 header/checksum) ≈ **51 KB/s leaked**. This matches the unmodified hardware log exactly:\n\n- `heap_free` fell from 391916 → 23056 between `seq=0` and `seq=350`\n- once the heap was exhausted, `build_frame()` still managed but `encode_frame()` failed, so `sent` froze at 360 while `failed` kept increasing forever — the uplink stopped passing frames\n\n## Fix\n\nOne line in `main/main.c` (`send_with_retry`): free the buffer the caller still owns on send failure.\n\n```c\nesp_err_t err = link_send(&pkt);\nif (err == ESP_OK) {\n    return ESP_OK;\n}\n/* link_send only takes ownership on ESP_OK; on error the caller keeps pkt.data. */\nfree(pkt.data);\n```\n\n`link.c`/`link.h`, the frame size, and the 50 Hz rate are untouched.\n\n## Verification on the board\n\nReflashed and captured 30 s of serial:\n\n- `heap_free` stayed constant at **391916** across `seq=0..1450` (no leak)\n- `sent` tracked `seq+1` the whole time, `failed=0`\n- `retries` kept climbing (~12/s), which is the expected radio-busy behaviour and is handled by the retry loop\n\nThe uplink now keeps sending indefinitely."
+}

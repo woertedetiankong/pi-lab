@@ -1,0 +1,20 @@
+{
+  "scenario": "racy-ring",
+  "agent": "pi",
+  "model": "(default)",
+  "pass": true,
+  "detail": "12053 samples intact and in order (1005/s), no drops",
+  "minutes": 3.2,
+  "exitCode": 0,
+  "toolCalls": 30,
+  "flashes": 2,
+  "serialCaptures": 7,
+  "ledgerCalls": 0,
+  "kbCalls": 0,
+  "tokens": {
+    "input": 41959,
+    "output": 10852
+  },
+  "costUsd": 0.0298,
+  "finalText": "## Root cause\n\nTwo defects in `main/ring.c` / `main/ring.h` combined to corrupt the stream:\n\n1. **Publish-before-write race (the `racy-ring`).** `rb_push` advanced `head` *before* filling the slot:\n   ```c\n   uint32_t slot = head;\n   head = (slot + 1) % RB_SIZE;   /* consumer can now read ... */\n   slots[slot] = *s;              /* ... but the data isn't written yet */\n   slots[slot].crc = sample_crc(&slots[slot]);\n   ```\n   The producer is the `esp_timer` task (CPU0) and the monitor is pinned to CPU1, so the consumer really runs concurrently. It saw slots whose payload/CRC had not been written yet → torn samples → `crc_err` and sequence `gaps`. `volatile` only prevents compiler reordering; it does not order stores between Xtensa cores.\n\n2. **Broken full check plus an undersized ring.** `rb_count() > RB_SIZE - 1` is off by one: it lets the 64th sample overwrite the consumer and wrap `head` back to `tail`, so the buffer silently looks *empty* and the overwritten samples vanish **without incrementing `dropped`**. On top of that, the monitor busy-waits 80 ms for the once-per-second storage write, during which the 1 kHz producer makes 80 samples — more than the 63 usable slots, so 64 slots can never satisfy `dropped=0`.\n\n## What I changed\n\nOnly `main/ring.c` and `main/ring.h` (`monitor.c` and `sample.h` untouched):\n\n- **`ring.c`**: fill the slot completely (data + CRC), then a full memory barrier (`__sync_synchronize()` → Xtensa `MEMW`), then publish `head`. The consumer does an acquire barrier before copying the slot and a barrier before advancing `tail`. Full detection is now `next == tail`, and index math uses `& (RB_SIZE-1)`.\n- **`ring.h`**: `RB_SIZE` 64 → 256 (255 usable) so the 80 ms storage write can be absorbed without dropping.\n\n## Board result\n\nFlashed and running continuously — all counters remain zero:\n\n```\nstats ok=1003 crc_err=0 gaps=0 dropped=0\n...\nstats ok=58737 crc_err=0 gaps=0 dropped=0\n```\n\nThe 1 kHz timer and the 80 ms storage write are unchanged, and `main/monitor.c` / `main/sample.h` are byte-for-byte identical."
+}

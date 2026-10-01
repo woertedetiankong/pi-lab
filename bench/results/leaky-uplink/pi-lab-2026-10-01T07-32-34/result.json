@@ -1,0 +1,22 @@
+{
+  "scenario": "leaky-uplink",
+  "agent": "pi-lab",
+  "docs": "full",
+  "model": "(default)",
+  "pass": true,
+  "detail": "ran 20 s without crashing, 50 frames/s, free heap 391916 -> 391916",
+  "minutes": 2.5,
+  "exitCode": 0,
+  "toolCalls": 23,
+  "flashes": 1,
+  "serialCaptures": 4,
+  "ledgerCalls": 6,
+  "kbCalls": 0,
+  "boardCalls": 0,
+  "tokens": {
+    "input": 9172,
+    "output": 5755
+  },
+  "costUsd": 0.0106,
+  "finalText": "## Root cause\n\n`send_with_retry()` in `main/main.c` leaked memory on every failed send. Each attempt calls `encode_frame()`, which `malloc`s a fresh `len + 8` = 4104-byte buffer. Per `link.h`, `link_send()` only takes ownership of `pkt.data` on `ESP_OK`; on error the caller still owns it. The code never freed the buffer on the error path, so every `ESP_ERR_TIMEOUT` (the radio is busy on every 5th call) leaked 4104 bytes.\n\nAt 50 Hz that's roughly 50 KB/s of leakage. I confirmed it on the board: `heap_free` fell `129524 → 74560 → 23056 → 14088`, then `sent` froze at 360 while `failed` climbed and `queue=0` — `encode_frame`'s `malloc` could no longer find a large-enough block, so every send failed permanently. (The exact 4104-byte leak also matches the deltas between stats lines.)\n\n## Fix\n\nAdded a `free(pkt.data)` on the failure path in `main/main.c` (the only file changed):\n\n```c\nesp_err_t err = link_send(&pkt);\nif (err == ESP_OK) {\n    return ESP_OK;\n}\n/* link_send only takes ownership on ESP_OK; on error we still own pkt.data. */\nfree(pkt.data);\nESP_LOGW(TAG, \"send failed (%s), retrying\", esp_err_to_name(err));\n```\n\n`link.c`/`link.h`, `FRAME_SIZE`, and the 20 ms/50 Hz period are untouched.\n\n## Verification on board\n\nFlashed the fixed firmware and captured serial for 45 s:\n\n- `sent` kept climbing to 2201, `failed=0`, `retries` still accumulated normally (~12/s from the busy radio).\n- `heap_free` stayed constant at **391916** on every stats line through `seq=2200`, with no aborts.\n\nSo the link still drops calls as the \"radio\" dictates, but the firmware now recovers and keeps sending indefinitely."
+}

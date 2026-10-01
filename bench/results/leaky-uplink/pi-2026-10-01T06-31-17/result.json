@@ -1,0 +1,20 @@
+{
+  "scenario": "leaky-uplink",
+  "agent": "pi",
+  "model": "(default)",
+  "pass": true,
+  "detail": "ran 20 s without crashing, 50 frames/s, free heap 391916 -> 391916",
+  "minutes": 1.5,
+  "exitCode": 0,
+  "toolCalls": 17,
+  "flashes": 1,
+  "serialCaptures": 3,
+  "ledgerCalls": 0,
+  "kbCalls": 0,
+  "tokens": {
+    "input": 10155,
+    "output": 3846
+  },
+  "costUsd": 0.0084,
+  "finalText": "Fix verified on the board: heap is flat at 391916 bytes and `sent` keeps climbing indefinitely (seq 1200+, zero failures).\n\n## Root cause\n\n`link_send()` does **not** take ownership of `pkt.data` when it returns an error (documented in `link.h`: \"On any error the caller keeps ownership\"). In `send_with_retry()` (`main/main.c`), each retry allocated a fresh encoded copy via `encode_frame()` but never freed the copy from the failed attempt. Since the simulated radio is busy every 5th call, ~20 of the 50 frames/sec failed and leaked `FRAME_SIZE + 8` = 4104 bytes each → roughly 80 KB/s of internal RAM gone.\n\nAfter a few seconds the internal heap (PSRAM is disabled) was exhausted, so `encode_frame()` started returning `NULL` and every send failed permanently. Confirmed in the baseline log: heap fell 391916 → 180260 → 129524 → 74560 → 23056 → 14088, at which point `sent` froze at 360 while `failed` kept climbing.\n\n## Change\n\nIn `main/main.c`, free the encoded packet when `link_send()` fails, before the next attempt:\n\n```c\nesp_err_t err = link_send(&pkt);\nif (err == ESP_OK) {\n    return ESP_OK;\n}\n/* link_send only takes ownership on success; on error the caller must\n * free the encoded copy before building the next attempt. */\nfree(pkt.data);\nESP_LOGW(TAG, \"send failed (%s), retrying\", esp_err_to_name(err));\nretries++;\n```\n\nI left `main/link.c`, `main/link.h`, the frame size, and the 50 Hz rate untouched. After rebuilding and flashing, heap stays constant and the firmware sends indefinitely (the intentional \"busy\" failures are retried without leaking)."
+}

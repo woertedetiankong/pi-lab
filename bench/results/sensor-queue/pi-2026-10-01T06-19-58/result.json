@@ -1,0 +1,21 @@
+{
+  "scenario": "sensor-queue",
+  "agent": "pi",
+  "model": "(default)",
+  "pass": true,
+  "detail": "re-judged from diff.patch on a recovered board: 90 readings reported in order with correct temperatures (first judgement hit a wedged USB port)",
+  "minutes": 1.7,
+  "exitCode": 0,
+  "toolCalls": 17,
+  "flashes": 2,
+  "serialCaptures": 5,
+  "ledgerCalls": 0,
+  "kbCalls": 0,
+  "tokens": {
+    "input": 10747,
+    "output": 5885
+  },
+  "costUsd": 0.0112,
+  "finalText": "## Root cause\n\nThe queue stored `char *` pointers, and `sensor_task` always sent the address of its **single shared stack buffer** `line`:\n\n```c\nchar line[48];\n...\nchar *msg = line;\nxQueueSend(readings, &msg, ...);   // copies the pointer, not the text\n```\n\n`xQueueSend` copies only the pointer value. Every queued item pointed at the same 48-byte stack buffer, which the next loop iteration immediately overwrote. By the time `report_task` woke up (it even sleeps 30 ms before printing), the buffer held the last reading written, so each burst printed the same `seq`/`temp` repeatedly (e.g. five copies of `seq=4`), and earlier readings were lost.\n\nA secondary defect was `QUEUE_LEN 4` for a burst of 5, which forced the last send to rely on a 10 ms timeout and could drop a reading.\n\n## What I changed (`main/main.c`)\n\n- Replaced the pointer-based queue with a by-value `reading_t { uint32_t seq; int temp; }`. `xQueueSend` now copies the actual reading, so each queued entry stays intact.\n- `report_task` receives a `reading_t` and formats the same `report seq=<n> temp=<t>` line, preserving the line format.\n- Set `QUEUE_LEN` to `FIFO_BURST` (5) so a full burst fits without timeout drops.\n- Burst size (5) and burst interval (500 ms) are unchanged.\n\n## Verification on the board\n\nFlashed and captured serial output: readings now appear exactly once, in order, each with its own temperature, e.g. `seq=0 temp=20.00`, `seq=1 temp=20.37`, `seq=2 temp=20.74`, \u2026 A 12-second capture yielded 123 consecutive seq values (132\u2192254), all unique, strictly `+1`, with zero `dropped` warnings.",
+  "firstJudge": "only 0 report lines in 9 s (expected about 85)"
+}

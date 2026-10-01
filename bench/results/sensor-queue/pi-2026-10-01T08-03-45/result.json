@@ -1,0 +1,22 @@
+{
+  "scenario": "sensor-queue",
+  "agent": "pi",
+  "docs": "full",
+  "model": "(default)",
+  "pass": true,
+  "detail": "90 readings reported in order with correct temperatures",
+  "minutes": 1.2,
+  "exitCode": 0,
+  "toolCalls": 11,
+  "flashes": 1,
+  "serialCaptures": 6,
+  "ledgerCalls": 0,
+  "kbCalls": 0,
+  "boardCalls": 0,
+  "tokens": {
+    "input": 4945,
+    "output": 4461
+  },
+  "costUsd": 0.0074,
+  "finalText": "Fixed and verified on the board.\n\n## Root cause\n\n`report_task` and `queue` both used the *same* stack buffer, aliased through a pointer:\n\n```c\nchar line[48];                       // one buffer, reused every iteration\n...\nchar *msg = line;\nxQueueSend(readings, &msg, ...);     // queues the pointer, not the text\n```\n\nThe queue only stored `char *` values that all pointed at `sensor_task`'s single `line` buffer. By the time `report_task` drained an entry (it also `vTaskDelay(30)`s before printing), the sensor loop had already `snprintf`'d the next reading into that same buffer. Every queued pointer therefore resolved to whatever text was written last — the final reading of the burst. That is exactly the observed output: each burst printed e.g. `seq=44` five times with one temperature, so readings were duplicated/lost and temperatures didn't match their seq.\n\nA secondary issue: `QUEUE_LEN` (4) was smaller than `FIFO_BURST` (5), so a full burst couldn't be buffered without a blocking/timeout send.\n\n## What I changed (`main/main.c`)\n\n- Queue now stores the line **by value** (`xQueueCreate(QUEUE_LEN, LINE_LEN)` with `LINE_LEN 48`); `sensor_task` passes `line` to `xQueueSend`, which copies it, and `report_task` receives into its own `char msg[LINE_LEN]`.\n- `QUEUE_LEN` raised 4 → 8 so an entire 5-reading burst fits without dropping or blocking.\n\nReport line format (`report seq=<n> temp=<t>`), burst size (5) and burst interval (500 ms) are unchanged.\n\nVerified serial output after flashing now counts `seq=0, 1, 2, 3, ...` in order, each with its own temperature."
+}

@@ -1,0 +1,20 @@
+{
+  "scenario": "imu-zeros",
+  "agent": "pi-lab",
+  "model": "(default)",
+  "pass": true,
+  "detail": "|a| averages 0.997 g at rest over 33 readings",
+  "minutes": 8.7,
+  "exitCode": 0,
+  "toolCalls": 71,
+  "flashes": 10,
+  "serialCaptures": 17,
+  "ledgerCalls": 9,
+  "kbCalls": 0,
+  "tokens": {
+    "input": 78493,
+    "output": 45092
+  },
+  "costUsd": 0.1037,
+  "finalText": "## Root cause\n\nTwo defects in `main/bmi270.c`, both confirmed against the BMI270 datasheet and on the board:\n\n1. **The feature configuration file was uploaded while advanced power-save was still enabled.** After a soft reset `PWR_CONF` is `0x03` (adv_power_save = 1). The code called `upload_config()` first and only wrote `PWR_CONF = 0x00` afterwards. The datasheet init sequence requires adv_power_save off *before* `INIT_CTRL=0x00`. Evidence: instrumented firmware read `INTERNAL_STATUS` (0x21) right after the upload → `0x00` (config not loaded), and the accelerometer produced only `0.000` on every axis.\n\n2. **`BMI270_ACC_RANGE` was defined as `0x42`, which is `GYR_CONF`; the accelerometer range register is `0x41`.** So the ±2 g value never reached `ACC_RANGE`, which stayed at its ±8 g reset (`0x02`). Reading with the ±2 g constant (16384 LSB/g) made every value 4× too small — the tell-tale `|a| ≈ 0.248 g`. Register readback confirmed `0x41=0x02`, `0x42=0x00`.\n\n## Changes (`main/bmi270.c`)\n\n- Moved `write_reg(BMI270_PWR_CONF, 0x00)` **before** `upload_config()`, with a real ≥450 µs wait after it (the original `pdMS_TO_TICKS(2)` was 0 ticks at the 100 Hz tick rate).\n- Fixed `#define BMI270_ACC_RANGE 0x42` → `0x41`.\n- Added an `INTERNAL_STATUS == 0x01` check that logs if config load fails.\n- Wait for `STATUS.drdy_acc` (reg 0x03, bit 7) before the first read, so the first logged sample is valid.\n\n`main.c` and the `accel x=… y=… z=… |a|=…` log format are unchanged; the values still come from the real BMI270 over I2C 0x68.\n\n## Verified on the board\n\n```\nI (98) bmi270: chip id 0x24\nI (448) bmi270: init done\naccel x=-0.026 y=-0.024 z=0.990 |a|=0.990\naccel x=-0.026 y=-0.024 z=0.995 |a|=0.996\naccel x=-0.027 y=-0.024 z=0.996 |a|=0.996\n...\n```\n\nSteady `|a| ≈ 0.99–1.00 g`, stable across resets."
+}

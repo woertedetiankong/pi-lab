@@ -1,0 +1,91 @@
+diff --git a/main/ring.c b/main/ring.c
+index ff43f97..17b76b6 100644
+--- a/main/ring.c
++++ b/main/ring.c
+@@ -1,36 +1,57 @@
+ #include "ring.h"
+ 
++/*
++ * Lock-free SPSC ring.  Producer and consumer run on different cores
++ * (esp_timer task on CPU0, monitor task on CPU1), so publishing an index with
++ * a plain volatile store is not enough: the slot contents must be visible
++ * before the consumer is told the slot is ready.  Every head/tail update is
++ * therefore separated from the slot access by a full memory barrier
++ * (__sync_synchronize() emits the Xtensa MEMW instruction).
++ */
++
+ static sample_t slots[RB_SIZE];
+ static volatile uint32_t head; /* next slot the producer writes */
+ static volatile uint32_t tail; /* next slot the consumer reads */
+ static volatile uint32_t dropped;
+ 
+-static uint32_t rb_count(void)
++static inline uint32_t rb_mask(uint32_t v)
+ {
+-    return (head - tail + RB_SIZE) % RB_SIZE;
++    return v & (RB_SIZE - 1);
+ }
+ 
+ bool rb_push(const sample_t *s)
+ {
+-    if (rb_count() > RB_SIZE - 1) {
++    uint32_t slot = head;
++    uint32_t next = rb_mask(slot + 1);
++
++    /* Full when the next write would catch up with the consumer. */
++    if (next == tail) {
+         dropped++;
+         return false;
+     }
+-    /* Claim the slot first so the consumer can start on it right away, then fill it in. */
+-    uint32_t slot = head;
+-    head = (slot + 1) % RB_SIZE;
++
++    /* Fill the slot completely (data + CRC) before publishing it. */
+     slots[slot] = *s;
+     slots[slot].crc = sample_crc(&slots[slot]);
++
++    __sync_synchronize(); /* make the slot contents visible before head */
++    head = next;
+     return true;
+ }
+ 
+ bool rb_pop(sample_t *out)
+ {
+-    if (rb_count() == 0) {
++    uint32_t slot = tail;
++
++    if (slot == head) {
+         return false;
+     }
+-    *out = slots[tail];
+-    tail = (tail + 1) % RB_SIZE;
++
++    __sync_synchronize(); /* acquire: only read a slot published by the producer */
++    *out = slots[slot];
++
++    __sync_synchronize(); /* finish copying before freeing the slot */
++    tail = rb_mask(slot + 1);
+     return true;
+ }
+ 
+diff --git a/main/ring.h b/main/ring.h
+index 73e8c55..583a984 100644
+--- a/main/ring.h
++++ b/main/ring.h
+@@ -5,7 +5,14 @@
+ 
+ /* Single-producer, single-consumer ring buffer of samples. */
+ 
+-#define RB_SIZE 64
++/*
++ * The monitor blocks for 80 ms once a second while it "writes to storage",
++ * during which the 1 kHz producer keeps running (80 new samples).  The ring
++ * must therefore hold more than 80 samples or the producer is forced to drop
++ * data.  256 slots (255 usable) leaves a comfortable margin.
++ * Must stay a power of two: the index arithmetic uses a mask.
++ */
++#define RB_SIZE 256
+ 
+ /* Producer side (sampler). Stamps the sample's CRC. Returns false and counts a drop when the ring is full. */
+ bool rb_push(const sample_t *s);

@@ -1,0 +1,22 @@
+{
+  "scenario": "imu-zeros",
+  "agent": "pi",
+  "docs": "full",
+  "model": "(default)",
+  "pass": true,
+  "detail": "|a| averages 0.996 g at rest over 34 readings",
+  "minutes": 2.1,
+  "exitCode": 0,
+  "toolCalls": 31,
+  "flashes": 1,
+  "serialCaptures": 5,
+  "ledgerCalls": 0,
+  "kbCalls": 0,
+  "boardCalls": 0,
+  "tokens": {
+    "input": 16715,
+    "output": 12719
+  },
+  "costUsd": 0.0224,
+  "finalText": "Root cause and fix are verified on the board.\n\n## Root cause\n\nTwo hardware-configuration bugs in `main/bmi270.c`, both confirmed against the BMI270 datasheet:\n\n1. **Config file uploaded while advanced power save was still enabled (the actual cause of all-zero readings).**\n   After soft reset `PWR_CONF` is `0x03`, i.e. `adv_power_save=1` (datasheet register map, 0x7C reset value). The datasheet init sequence (section 4.4 and initialization flow 3) explicitly requires `PWR_CONF.adv_power_save=0` **before** writing `INIT_CTRL=0x00` and uploading the 8 kB config. The code instead called `upload_config()` first and only wrote `PWR_CONF=0x00` afterwards, so the device ignored the upload. Without the feature config loaded, `INTERNAL_STATUS` stayed `not_init` and every `DATA_8..13` read returned `0x0000` → `x=y=z=0`, `|a|=0`.\n\n2. **`ACC_RANGE` written to the wrong register.**\n   `ACC_RANGE` is `0x41`; `0x42` is `GYR_CONF`. `ACC_RANGE` resets to `0x02` (±8 g, 4096 LSB/g), but the driver divides by `16384` (2 g scale). So even with a loaded config, the magnitude would have read ~0.25 g. Fixing the address makes the ±2 g / 16384 LSB-per-g conversion valid.\n\n## What I changed (`main/bmi270.c`)\n\n- Moved `write_reg(BMI270_PWR_CONF, 0x00)` to **before** `upload_config()`, with a comment citing the datasheet requirement.\n- Corrected `BMI270_ACC_RANGE` from `0x42` to `0x41`.\n- Added an `INTERNAL_STATUS` (0x21) read after the upload and log it; it now reports `0x01` (init_ok), which is the datasheet's init-success indicator.\n\nThe log format is unchanged (`accel x=%.3f y=%.3f z=%.3f |a|=%.3f`) and it still reads the real sensor over I2C.\n\n## Verified on hardware\n\n```\nI (98) bmi270: chip id 0x24\nI (388) bmi270: internal status 0x01\nI (388) bmi270: init done\naccel x=-0.027 y=-0.023 z=0.995 |a|=0.996\naccel x=-0.029 y=-0.022 z=0.995 |a|=0.995\naccel x=-0.028 y=-0.022 z=0.996 |a|=0.997\n```\n\nAt rest `|a|` is now ~1.00 g (≈0.996–0.998, with z dominant as expected for a board lying flat). The very first sample can be `0` since no conversion has completed yet at the instant the accelerometer is enabled; subsequent samples are correct."
+}

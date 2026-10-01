@@ -34,6 +34,11 @@ const FLASH_PATTERNS: RegExp[] = [
 
 export const isFlashCommand = (command: string) => FLASH_PATTERNS.some(p => p.test(command));
 
+/** Commands that open the board's serial port: flashers, monitors, scripts that talk to it. */
+export const usesPort = (command: string) =>
+  isFlashCommand(command) ||
+  /\bidf\.py\b[^\n|;&]*\bmonitor\b|\b(?:pio|platformio)\b[^\n|;&]*device\s+monitor|\besptool|\bminiterm|\bminicom\b|\bpicocom\b|\bscreen\s+\/dev\/|\bserial\.Serial\b|\bserial_capture\b|\/dev\/(?:cu\.|tty\.|ttyACM|ttyUSB)/.test(command);
+
 // Files whose change means the image on the chip no longer matches.
 const FIRMWARE_FILE = /(?:\.(?:c|h|cc|cpp|cxx|hpp|hh|s|S|asm|ld|lds|icf|sct|rs|ino|dts|dtsi|overlay|ioc|uvprojx|ewp|cmake)$|(?:^|\/)(?:CMakeLists\.txt|Kconfig[^/]*|sdkconfig[^/]*|prj\.conf|platformio\.ini|Makefile|Cargo\.toml|memory\.x|partitions[^/]*\.csv)$)/;
 

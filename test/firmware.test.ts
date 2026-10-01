@@ -72,3 +72,10 @@ test("outside git the state is unknown", async () => {
   assert.equal(await sourceState(runIn(dir)), undefined);
   assert.equal(compare(undefined, undefined).kind, "unknown");
 });
+
+test("commands that open the serial port", async () => {
+  const { usesPort } = await import("../src/firmware.ts");
+  for (const c of ["idf.py -p /dev/cu.usbmodem101 flash monitor", "idf.py monitor", "pio device monitor", "python -m esptool chip-id",
+    "python3 - <<'PY'\nimport serial\np = serial.Serial('/dev/cu.usbmodem101')\nPY", "cat /dev/cu.usbmodem101", "python tools/serial_capture.py --seconds 8"]) assert.ok(usesPort(c), c);
+  for (const c of ["idf.py build", "ls /dev/", "grep -rn serial main/", "git status"]) assert.ok(!usesPort(c), c);
+});

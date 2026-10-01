@@ -7,18 +7,33 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import { buildErrors, findPorts, flashFailure, projectKind, type Run, serialPython, shellQuote, toolchainPrefix } from "./board.ts";
+import { crashAddresses, elfInfo, formatFrames } from "./crash.ts";
 import { foldText } from "./fold.ts";
+import { type LogLine, SerialHub } from "./serial-hub.ts";
 
 const assets = fileURLToPath(new URL("../assets/", import.meta.url));
 const SERIAL_FOLD = { keepRecent: 0, minLines: 150, head: 25, tail: 40, notable: 60 };
 
 const text = (t: string) => ({ content: [{ type: "text" as const, text: t }], details: undefined });
 
+export interface BoardAccess {
+  /** The serial hub for a port (the first board found when left out); undefined without a board or pyserial. */
+  hub(port?: string): Promise<SerialHub | undefined>;
+  /** Hubs started so far. */
+  hubs(): SerialHub[];
+  reenumerate(): Promise<string>;
+}
+
+/** Lines as the model reads them: pi-lab's markers in brackets. */
+export const logText = (lines: LogLine[]) => lines.map(l => (l.kind === "mark" ? `[pi-lab: ${l.text}]` : l.text)).join("\n");
+
 export function registerBoardTools(pi: ExtensionAPI, hooks: {
   flashed: (ctx: ExtensionContext, command: string) => Promise<unknown>;
   /** What to tell the model when the chip keeps booting into its download mode. */
   downloadModeHint?: () => string | undefined;
-}): void {
+  /** The project directory, for its build output (crash decoding). */
+  cwd: () => string;
+}): BoardAccess {
   const run: Run = async (command, args, options) => {
     const r = await pi.exec(command, args, { cwd: options?.cwd, timeout: options?.timeout });
     return { stdout: r.stdout, stderr: r.stderr, code: r.code };
@@ -38,12 +53,43 @@ export function registerBoardTools(pi: ExtensionAPI, hooks: {
     return ports[0]!;
   };
 
-  const capture = async (port: string, args: string[], seconds: number) => {
-    const py = await serialTool();
-    if (!py) throw new Error("No Python with pyserial found (looked in ESP-IDF's and PlatformIO's environments and python3).");
-    const r = await run(py, [join(assets, "serial_capture.py"), "--port", port, "--seconds", String(seconds), ...args], { timeout: (seconds + 30) * 1000 });
-    return r.stdout;
+  // A crash line's code addresses, as functions and source lines. A crash loop repeats the same addresses: decode once.
+  const decoded = new Map<string, Promise<string[]>>();
+  const decodeCrash = (line: LogLine): Promise<string[]> | undefined => {
+    const addresses = crashAddresses(line.text);
+    if (!addresses?.length) return undefined;
+    const dir = hooks.cwd();
+    const info = elfInfo(dir);
+    if (!info) return undefined;
+    const key = `${info.elf}|${addresses.join(" ")}`;
+    let result = decoded.get(key);
+    if (!result) {
+      result = shell(`${toolchainPrefix("esp-idf")}${info.addr2line} -pfiaC -e ${shellQuote(info.elf)} ${addresses.join(" ")}`, dir, 30_000)
+        .then(r => r.code === 0 ? formatFrames(r.stdout, dir).map(f => `↳ ${f}`) : []);
+      decoded.set(key, result);
+    }
+    return result;
   };
+
+  const hubs = new Map<string, SerialHub>();
+  const hubFor = async (requested?: string): Promise<SerialHub | undefined> => {
+    let port: string;
+    try { port = choosePort(requested); } catch { return undefined; }
+    const existing = hubs.get(port);
+    if (existing) return existing;
+    const py = await serialTool();
+    if (!py) return undefined;
+    const hub = new SerialHub({ python: py, script: join(assets, "serial_broker.py"), port, recover: reenumerate, annotate: decodeCrash });
+    hubs.set(port, hub);
+    return hub;
+  };
+  const needHub = async (requested?: string) => {
+    const hub = await hubFor(requested);
+    if (hub) return hub;
+    choosePort(requested);
+    throw new Error("No Python with pyserial found (looked in ESP-IDF's and PlatformIO's environments and python3).");
+  };
+  pi.on("session_shutdown", () => { for (const h of hubs.values()) h.stop(); hubs.clear(); });
 
   /** Software unplug and replug of the board's USB device (macOS). */
   const reenumerate = async (): Promise<string> => {
@@ -71,28 +117,29 @@ export function registerBoardTools(pi: ExtensionAPI, hooks: {
       until: Type.Optional(Type.String({ description: "Stop early once a line matches this regular expression, e.g. 'Guru Meditation|boot_count='" })),
       port: Type.Optional(Type.String({ description: "Serial port; found automatically when left out" })),
     }),
-    async execute(_id, params) {
-      const port = choosePort(params.port);
+    async execute(_id, params, signal) {
+      const hub = await needHub(params.port);
       const seconds = params.seconds ?? 8;
-      const args = [...(params.reset === false ? ["--no-reset"] : []), ...(params.until ? ["--until", params.until] : [])];
-      let log = await capture(port, args, seconds);
+      const options = { seconds, reset: params.reset !== false, until: params.until ? new RegExp(params.until) : undefined, signal };
+      let lines = await hub.capture(options);
       let note = "";
-      if (!log.trim() && params.reset !== false) {
+      const printed = () => lines.some(l => l.kind === "out" && l.text.trim());
+      if (!printed() && options.reset) {
         // A wedged USB port prints nothing at all, not even the ROM's boot banner.
         const recovered = await reenumerate();
-        log = await capture(choosePort(params.port), args, seconds);
-        note = `\n[pi-lab: the board printed nothing; USB ${recovered}${log.trim() ? ", then it answered" : ", still silent"}.]`;
+        lines = await hub.capture(options);
+        note = `\n[pi-lab: the board printed nothing; USB ${recovered}${printed() ? ", then it answered" : ", still silent"}.]`;
       }
-      if (!log.trim()) return text(`No output from ${port} in ${seconds} s${note || " (without a reset the firmware may simply be quiet)"}.`);
-      const lines = log.split("\n").length;
-      const file = join(tmpdir(), "pi-lab", `serial-${new Date().toISOString().replace(/[:.]/g, "-")}.log`);
-      mkdirSync(join(file, ".."), { recursive: true });
-      writeFileSync(file, log);
+      if (!printed()) return text(`No output from ${hub.port} in ${seconds} s${note || " (without a reset the firmware may simply be quiet)"}.`);
+      const log = logText(lines);
       if (/waiting for download/.test(log)) {
         note += `\n[pi-lab: ${hooks.downloadModeHint?.() ?? "The chip booted into its download mode (boot strap held low), so the firmware did not run. Ask the user to reset the board normally."}]`;
       }
+      const file = join(tmpdir(), "pi-lab", `serial-${new Date().toISOString().replace(/[:.]/g, "-")}.log`);
+      mkdirSync(join(file, ".."), { recursive: true });
+      writeFileSync(file, log);
       const shown = foldText(log, SERIAL_FOLD) ?? log;
-      return text(`Serial log from ${port} (${params.reset === false ? "no reset" : "after reset"}, ${lines} lines, full log in ${file}):${note}\n${shown}`);
+      return text(`Serial log from ${hub.port} (${options.reset ? "after reset" : "no reset"}, ${lines.length} lines, full log in ${file}):${note}\n${shown}`);
     },
   });
 
@@ -112,9 +159,14 @@ export function registerBoardTools(pi: ExtensionAPI, hooks: {
       const port = choosePort(params.port);
       const prefix = toolchainPrefix(kind);
 
+      const hub = await hubFor(port);
       if (kind === "platformio") {
-        const r = await shell(`pio run -t upload --upload-port ${shellQuote(port)} 2>&1`, ctx.cwd, 15 * 60_000);
-        if (r.code !== 0) return text(`Upload failed:\n${buildErrors(r.stdout) || r.stdout.slice(-3000)}`);
+        const giveBack = await hub?.lend();
+        try {
+          const r = await shell(`pio run -t upload --upload-port ${shellQuote(port)} 2>&1`, ctx.cwd, 15 * 60_000);
+          if (r.code !== 0) return text(`Upload failed:\n${buildErrors(r.stdout) || r.stdout.slice(-3000)}`);
+        } finally { giveBack?.(); }
+        hub?.mark("flashed (PlatformIO upload)");
         await hooks.flashed(ctx, "board_flash");
         return text(`Built and uploaded to ${port}. Use board_serial to read its output.`);
       }
@@ -128,12 +180,15 @@ export function registerBoardTools(pi: ExtensionAPI, hooks: {
       const flash = () => shell(
         `${prefix}cd build && python -m esptool --chip auto -p ${shellQuote(port)} -b 460800 --before default-reset --after no-reset write-flash @flash_args 2>&1`,
         ctx.cwd, 5 * 60_000);
-      let f = await flash();
-      let note = "";
-      if (f.code !== 0 && flashFailure(f.stdout) === "no-connect") {
-        note = ` (the USB port had stopped responding; ${await reenumerate()} and retried)`;
+      const giveBack = await hub?.lend();
+      let f, note = "";
+      try {
         f = await flash();
-      }
+        if (f.code !== 0 && flashFailure(f.stdout) === "no-connect") {
+          note = ` (the USB port had stopped responding; ${await reenumerate()} and retried)`;
+          f = await flash();
+        }
+      } finally { giveBack?.(); }
       if (f.code !== 0) {
         const why = flashFailure(f.stdout);
         const hint = why === "port-busy" ? "Another program has the port open (a serial monitor?). Close it and try again."
@@ -141,9 +196,16 @@ export function registerBoardTools(pi: ExtensionAPI, hooks: {
           : "";
         return text(`Flashing failed${note}. ${hint}\n${f.stdout.slice(-2000)}`);
       }
-      await capture(port, ["--reset-only"], 5);
-      await hooks.flashed(ctx, "board_flash");
       const written = f.stdout.match(/Wrote \d+ bytes[^\n]*/g)?.pop() ?? "";
+      hub?.mark(`flashed${written ? `: ${written}` : ""}`);
+      if (hub) {
+        const from = hub.lastN;
+        await hub.hold(async () => {
+          await hub.reset();
+          if (await hub.recoverStalledBoot(from)) note += " (the USB port wedged as the new firmware started; pi-lab re-enumerated it and reset again)";
+        });
+      }
+      await hooks.flashed(ctx, "board_flash");
       return text(`Flashed ${port}${note}. ${written}\nThe board was reset and runs the new firmware; read it with board_serial.`);
     },
   });
@@ -160,4 +222,6 @@ export function registerBoardTools(pi: ExtensionAPI, hooks: {
       return text(`USB ${result}. Ports now: ${ports.join(", ") || "none"}.`);
     },
   });
+
+  return { hub: hubFor, hubs: () => [...hubs.values()], reenumerate };
 }

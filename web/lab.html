@@ -1,0 +1,386 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pi 板子</title>
+<script src="/hub.js"></script>
+<style>
+:root {
+  --bg: #f6f6f3; --panel: #ffffff; --line: #e4e3dc; --line-strong: #d3d2c9;
+  --text: #1f1f1c; --muted: #6d6c64; --faint: #9c9b92;
+  --accent: #3d5afe; --accent-soft: #e8ecff; --accent-text: #2a3fc2;
+  --ok: #2e9d6a; --warn: #b67c0e; --warn-soft: #fbf1dc; --danger: #d4453b; --danger-soft: #fbe7e5;
+  --select: #e8ecff; --mark: #f1f0ea;
+  --r: 10px;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI", sans-serif;
+  --s1: #3d5afe; --s2: #e0663a; --s3: #2e9d6a; --s4: #a24bd6; --s5: #c98a12; --s6: #1b9ab8; --s7: #d4453b; --s8: #6d6c64;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #161615; --panel: #1e1e1c; --line: #2c2c29; --line-strong: #3a3a36;
+    --text: #ecebe6; --muted: #a09f97; --faint: #6f6e67;
+    --accent: #7b8cff; --accent-soft: #262b4a; --accent-text: #aab6ff;
+    --ok: #4cc38a; --warn: #e0a83a; --warn-soft: #3a2f16; --danger: #f07167; --danger-soft: #3d2220;
+    --select: #262b4a; --mark: #262624;
+    --s1: #7b8cff; --s2: #f08a5d; --s3: #4cc38a; --s4: #c48bf0; --s5: #e0a83a; --s6: #4fc3dc; --s7: #f07167; --s8: #a09f97;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #161615; --panel: #1e1e1c; --line: #2c2c29; --line-strong: #3a3a36;
+  --text: #ecebe6; --muted: #a09f97; --faint: #6f6e67;
+  --accent: #7b8cff; --accent-soft: #262b4a; --accent-text: #aab6ff;
+  --ok: #4cc38a; --warn: #e0a83a; --warn-soft: #3a2f16; --danger: #f07167; --danger-soft: #3d2220;
+  --select: #262b4a; --mark: #262624;
+  --s1: #7b8cff; --s2: #f08a5d; --s3: #4cc38a; --s4: #c48bf0; --s5: #e0a83a; --s6: #4fc3dc; --s7: #f07167; --s8: #a09f97;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { background: var(--bg); color: var(--text); font: 14px/1.45 var(--sans); display: flex; flex-direction: column; }
+header { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); flex-wrap: wrap; }
+.status { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1 1 260px; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--faint); flex: none; }
+.dot.open { background: var(--ok); } .dot.waiting { background: var(--warn); } .dot.paused { background: var(--accent); }
+.status .port { font-family: var(--mono); font-size: 13px; }
+.status .meta { color: var(--muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.status .meta.stale { color: var(--warn); }
+button { font: inherit; font-size: 13px; color: var(--text); background: var(--panel); border: 1px solid var(--line-strong); border-radius: 7px; padding: 5px 11px; cursor: pointer; }
+button:hover { border-color: var(--accent); color: var(--accent-text); }
+button.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-text); }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button:disabled { opacity: .5; cursor: default; }
+input[type=search], input[type=text] { font: inherit; font-size: 13px; color: var(--text); background: var(--bg); border: 1px solid var(--line-strong); border-radius: 7px; padding: 5px 9px; min-width: 0; }
+input[type=search] { width: 180px; }
+main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+#plotWrap { border-bottom: 1px solid var(--line); background: var(--panel); padding: 8px 16px 6px; }
+#plotWrap.hidden { display: none; }
+#plotTop { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+#legend { display: flex; gap: 6px; flex-wrap: wrap; flex: 1; }
+.series { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); cursor: pointer; font-family: var(--mono); color: var(--text); background: none; font-size: 12px; }
+.series.off { opacity: .4; }
+.series i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+.series b { font-weight: 500; color: var(--muted); }
+#plot { width: 100%; height: 200px; display: block; cursor: crosshair; }
+#plotEmpty { color: var(--faint); font-size: 13px; padding: 30px 0; text-align: center; }
+#tip { position: fixed; pointer-events: none; background: var(--panel); border: 1px solid var(--line-strong); border-radius: 6px; padding: 4px 8px; font: 12px var(--mono); display: none; z-index: 5; }
+#log { flex: 1; overflow: auto; font: 12.5px/1.5 var(--mono); padding: 6px 0 70px; background: var(--panel); }
+.row { display: flex; gap: 12px; padding: 0 16px; white-space: pre-wrap; word-break: break-word; cursor: default; }
+.row:hover { background: var(--bg); }
+.row .t { color: var(--faint); flex: none; user-select: none; }
+.row.sel { background: var(--select); }
+.row.E .x { color: var(--danger); } .row.W .x { color: var(--warn); } .row.D .x, .row.V .x { color: var(--faint); }
+.row.crash { background: var(--danger-soft); }
+.row.mark { color: var(--muted); background: var(--mark); margin: 4px 0; font-family: var(--sans); font-size: 12px; }
+.row.mark .x::before { content: "── "; } .row.mark .x::after { content: " ──"; }
+.row.decoded { background: var(--warn-soft); }
+.row.hide { display: none; }
+#empty { color: var(--faint); text-align: center; padding: 60px 16px; font-family: var(--sans); }
+#askBar { position: fixed; left: 16px; right: 16px; bottom: 14px; display: none; gap: 8px; align-items: center; background: var(--panel); border: 1px solid var(--line-strong); border-radius: var(--r); padding: 8px 10px; box-shadow: 0 4px 24px rgba(0,0,0,.12); }
+#askBar.show { display: flex; }
+#askBar .count { color: var(--muted); font-size: 13px; white-space: nowrap; }
+#askBar input { flex: 1; }
+#toast { position: fixed; top: 60px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 7px 14px; border-radius: 8px; font-size: 13px; display: none; z-index: 10; max-width: calc(100% - 32px); }
+@media (max-width: 640px) {
+  header { padding: 8px 12px; } input[type=search] { width: 100%; flex: 1 1 100%; }
+  .row { padding: 0 12px; } .row .t { display: none; }
+}
+</style>
+</head>
+<body>
+<header>
+  <div class="status"><span class="dot" id="dot"></span><span class="port" id="port">…</span><span class="meta" id="meta"></span></div>
+  <input type="search" id="filter">
+  <button id="follow" class="on"></button>
+  <button id="plotBtn" class="on"></button>
+  <button id="pause"></button>
+  <button id="reset"></button>
+  <button id="recover"></button>
+  <button id="clear"></button>
+</header>
+<main>
+  <div id="plotWrap">
+    <div id="plotTop"><div id="legend"></div><span id="windowLabel"></span>
+      <select id="window"><option value="30">30 s</option><option value="60" selected>60 s</option><option value="300">5 min</option><option value="0">∞</option></select>
+    </div>
+    <canvas id="plot"></canvas>
+    <div id="plotEmpty"></div>
+  </div>
+  <div id="log"><div id="empty"></div></div>
+</main>
+<div id="askBar"><span class="count" id="selCount"></span><input type="text" id="question"><button id="copy"></button><button class="primary" id="ask"></button></div>
+<div id="tip"></div>
+<div id="toast"></div>
+<script>
+"use strict";
+const T = {
+  zh: { title: "pi 板子", filter: "过滤日志…", follow: "自动滚动", plot: "曲线", pause: "释放串口", resume: "取回串口", reset: "复位板子", recover: "恢复 USB", recoverTip: "板子没反应时：用软件拔插一次 USB", recovered: "USB 已重新连接", clear: "清空",
+    empty: "等板子输出…（打开这个页面时，pi 会接管串口；点「释放串口」可以让其他程序使用）", noBoard: "没有找到板子：请插上 USB 线",
+    plotEmpty: "日志里出现 名称=数值（例如 fps=50、temp: 21.5）时，这里会画出曲线", selected: n => `已选 ${n} 行`,
+    question: "想问什么？（留空：这是什么意思，有问题就找原因）", ask: "问 pi", copy: "复制", copied: "已复制", asked: "已发给 pi，回到终端看回答",
+    states: { open: "已连接", waiting: "等待板子…", released: "串口已释放", paused: "已释放给其他程序", stopped: "未连接", "no-board": "没有板子" },
+    firmware: { never: "本次会话还没烧录", synced: "固件与代码一致", stale: "⚠ 板子上的固件不是最新代码" }, window: "时间窗" },
+  en: { title: "pi Board", filter: "Filter the log…", follow: "Follow", plot: "Plot", pause: "Release port", resume: "Take port back", reset: "Reset board", recover: "Recover USB", recoverTip: "When the board stops answering: a software unplug and replug", recovered: "USB re-enumerated", clear: "Clear",
+    empty: "Waiting for the board… (pi holds the serial port while this page is open; Release port lets other programs use it)", noBoard: "No board found: plug in its USB cable",
+    plotEmpty: "When the log prints name=value pairs (fps=50, temp: 21.5), they are plotted here", selected: n => `${n} line${n > 1 ? "s" : ""} selected`,
+    question: "Your question (empty: what does this mean, and find the cause if it is a problem)", ask: "Ask pi", copy: "Copy", copied: "Copied", asked: "Sent to pi; the answer is in the terminal",
+    states: { open: "connected", waiting: "waiting for the board…", released: "port released", paused: "released to other programs", stopped: "not connected", "no-board": "no board" },
+    firmware: { never: "not flashed in this session", synced: "firmware matches the code", stale: "⚠ the board runs older firmware than the code" }, window: "window" },
+};
+const web = window.piWeb || { token: new URLSearchParams(location.hash.slice(1)).get("token"), lang: "zh" };
+const t = T[web.lang] || T.en;
+document.title = t.title;
+const $ = id => document.getElementById(id);
+const api = async (path, body) => {
+  const r = await fetch(`/api/lab${path}`, body === undefined ? { headers: { "x-token": web.token } }
+    : { method: "POST", headers: { "x-token": web.token, "content-type": "application/json" }, body: JSON.stringify(body) });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw Object.assign(new Error(data.error || r.statusText), { status: r.status });
+  return data;
+};
+const toast = msg => { const el = $("toast"); el.textContent = msg; el.style.display = "block"; clearTimeout(toast.timer); toast.timer = setTimeout(() => el.style.display = "none", 2600); };
+
+for (const [id, key] of [["follow", "follow"], ["plotBtn", "plot"], ["reset", "reset"], ["recover", "recover"], ["clear", "clear"], ["ask", "ask"], ["copy", "copy"]]) $(id).textContent = t[key];
+$("recover").title = t.recoverTip;
+$("filter").placeholder = t.filter; $("question").placeholder = t.question; $("empty").textContent = t.empty; $("plotEmpty").textContent = t.plotEmpty;
+$("windowLabel").textContent = t.window;
+
+// ---- log ----
+const MAX_ROWS = 6000;
+const log = $("log");
+const rows = new Map();          // n -> row element
+const lines = new Map();         // n -> line
+let last = 0, follow = true, filter = "", anchor = null, paused = false;
+const selected = new Set();
+const time = ts => new Date(ts).toTimeString().slice(0, 8) + "." + String(ts % 1000).padStart(3, "0");
+const LEVEL = /^([EWIDV]) \(\d+\)/;
+const CRASH = /Guru Meditation|abort\(\) was called|Backtrace:|panic|assert failed|Stack smashing|HardFault|stack overflow/i;
+
+function addRow(line) {
+  $("empty").style.display = "none";
+  const row = document.createElement("div");
+  row.className = "row";
+  if (line.kind === "mark") row.classList.add("mark");
+  else if (line.kind === "decoded") row.classList.add("decoded");
+  else {
+    const m = LEVEL.exec(line.text);
+    if (m) row.classList.add(m[1]);
+    if (CRASH.test(line.text)) row.classList.add("crash");
+  }
+  row.dataset.n = line.n;
+  const tEl = document.createElement("span"); tEl.className = "t"; tEl.textContent = time(line.ts);
+  const xEl = document.createElement("span"); xEl.className = "x"; xEl.textContent = line.text;
+  row.append(tEl, xEl);
+  if (filter && !line.text.toLowerCase().includes(filter)) row.classList.add("hide");
+  log.appendChild(row);
+  rows.set(line.n, row); lines.set(line.n, line);
+  while (rows.size > MAX_ROWS) {
+    const [n, el] = rows.entries().next().value;
+    el.remove(); rows.delete(n); lines.delete(n); selected.delete(n);
+  }
+}
+function scrollDown() { if (follow) log.scrollTop = log.scrollHeight; }
+log.addEventListener("scroll", () => {
+  const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 30;
+  if (follow !== atBottom) { follow = atBottom; $("follow").classList.toggle("on", follow); }
+});
+$("follow").onclick = () => { follow = !follow; $("follow").classList.toggle("on", follow); scrollDown(); };
+$("filter").oninput = e => {
+  filter = e.target.value.trim().toLowerCase();
+  for (const [n, row] of rows) row.classList.toggle("hide", !!filter && !lines.get(n).text.toLowerCase().includes(filter));
+};
+$("clear").onclick = () => { for (const el of rows.values()) el.remove(); rows.clear(); lines.clear(); selected.clear(); updateSelection(); clearPlot(); };
+
+// ---- selection and "ask pi" ----
+function updateSelection() {
+  for (const [n, row] of rows) row.classList.toggle("sel", selected.has(n));
+  $("askBar").classList.toggle("show", selected.size > 0);
+  $("selCount").textContent = t.selected(selected.size);
+}
+log.addEventListener("click", e => {
+  const row = e.target.closest(".row"); if (!row) return;
+  if (window.getSelection().toString()) return;   // let the user select text to copy
+  const n = Number(row.dataset.n);
+  if (e.shiftKey && anchor !== null) {
+    const [a, b] = [Math.min(anchor, n), Math.max(anchor, n)];
+    for (const k of rows.keys()) if (k >= a && k <= b && !rows.get(k).classList.contains("hide")) selected.add(k);
+  } else if (e.metaKey || e.ctrlKey) { selected.has(n) ? selected.delete(n) : selected.add(n); anchor = n; }
+  else { const only = selected.size === 1 && selected.has(n); selected.clear(); if (!only) selected.add(n); anchor = n; }
+  updateSelection();
+});
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape") { selected.clear(); updateSelection(); }
+  if (e.key === "Enter" && document.activeElement === $("question")) $("ask").click();
+});
+const pickedText = () => [...selected].sort((a, b) => a - b).map(n => lines.get(n)).filter(Boolean).map(l => `${time(l.ts)}  ${l.text}`).join("\n");
+$("copy").onclick = async () => { await navigator.clipboard.writeText(pickedText()); toast(t.copied); };
+$("ask").onclick = async () => {
+  try {
+    await api("/ask", { lines: [...selected], question: $("question").value });
+    toast(t.asked); selected.clear(); $("question").value = ""; updateSelection();
+  } catch (err) { toast(err.message); }
+};
+
+// ---- plot of name=value pairs ----
+const PAIR = /(\|?[A-Za-z_][\w.\[\]]*\|?)\s*[=:]\s*(-?\d+(?:\.\d+)?)(?![\w.])/g;
+// The ROM's and ESP-IDF's start-up lines print addresses, sizes and clocks as name=value: not measurements.
+const SYSTEM = /^(?:rst:|load:|entry |SPIWP:|mode:|clk_drv|Saved PC|ESP-ROM|Build:|[EWIDV] \(\d+\) (?:boot|boot\.esp32\w*|esp_image|cpu_start|heap_init|spi_flash|app_init|efuse_init|esp_psram|octal_psram|quad_psram|sleep|sleep_gpio|main_task|clk|system_api|memspi|esp_core_dump\w*|coexist|phy_init|wifi\w*)[:.\s])/;
+const series = new Map();   // name -> { points: [{ts, v, n}], color, on }
+const COLORS = ["--s1", "--s2", "--s3", "--s4", "--s5", "--s6", "--s7", "--s8"];
+const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+let plotDirty = false;
+// Before ESP-IDF calls app_main everything is start-up; the app may use the same tags (a "boot" tag, say) later.
+let inApp = false;
+function collect(line) {
+  if (line.kind !== "out") return;
+  if (/^rst:/.test(line.text)) inApp = false;
+  if (/main_task: Calling app_main/.test(line.text)) { inApp = true; return; }
+  if (!inApp && SYSTEM.test(line.text)) return;
+  for (const [, name, value] of line.text.matchAll(PAIR)) {
+    // Skip ESP-IDF's "(1234)" uptime and addresses; keep what reads as a measurement.
+    if (/^0x/i.test(value) || name.length > 24) continue;
+    let s = series.get(name);
+    if (!s) {
+      if (series.size >= 12) continue;
+      // on: undefined follows the data (shown once it repeats); a click makes it the user's choice.
+      s = { points: [], color: COLORS[series.size % COLORS.length], on: undefined };
+      series.set(name, s);
+    }
+    s.points.push({ ts: line.ts, v: Number(value), n: line.n });
+    if (s.points.length > 5000) s.points.shift();
+    plotDirty = true;
+  }
+}
+function clearPlot() { series.clear(); plotDirty = true; }
+// A value that keeps coming is a measurement; one printed once or twice is usually configuration.
+const visible = s => s.on ?? (s.points.length >= 3 && [...series.values()].filter(o => o.on ?? o.points.length >= 3).indexOf(s) < 6);
+function legend() {
+  const el = $("legend"); el.textContent = "";
+  for (const [name, s] of series) {
+    const b = document.createElement("button");
+    b.className = "series" + (visible(s) ? "" : " off");
+    const sw = document.createElement("i"); sw.style.background = css(s.color);
+    const last = s.points[s.points.length - 1];
+    const v = document.createElement("b"); v.textContent = last ? String(last.v) : "";
+    b.append(sw, document.createTextNode(name), v);
+    b.onclick = () => { s.on = !visible(s); redraw(); };
+    el.appendChild(b);
+  }
+}
+const canvas = $("plot");
+let view = null;   // last drawn scales, for hovering
+function draw() {
+  plotDirty = false;
+  legend();
+  const any = series.size > 0;
+  canvas.style.display = any ? "block" : "none"; $("plotEmpty").style.display = any ? "none" : "block";
+  if (!any || $("plotWrap").classList.contains("hidden")) return;
+  const dpr = window.devicePixelRatio || 1, w = canvas.clientWidth, h = canvas.clientHeight;
+  canvas.width = w * dpr; canvas.height = h * dpr;
+  const g = canvas.getContext("2d"); g.scale(dpr, dpr); g.clearRect(0, 0, w, h);
+  const span = Number($("window").value) * 1000;
+  const shown = [...series.values()].filter(visible);
+  const now = Date.now();
+  let t0 = span ? now - span : Math.min(...shown.map(s => s.points[0]?.ts ?? now)), t1 = now;
+  let lo = Infinity, hi = -Infinity;
+  for (const s of shown) for (const p of s.points) if (p.ts >= t0) { lo = Math.min(lo, p.v); hi = Math.max(hi, p.v); }
+  if (!isFinite(lo)) { lo = 0; hi = 1; }
+  if (lo === hi) { lo -= 1; hi += 1; }
+  const pad = (hi - lo) * 0.08; lo -= pad; hi += pad;
+  const L = 48, R = 8, Tp = 6, B = 18;
+  const x = ts => L + (ts - t0) / (t1 - t0 || 1) * (w - L - R), y = v => Tp + (1 - (v - lo) / (hi - lo)) * (h - Tp - B);
+  g.font = `11px ${css("--mono") || "monospace"}`; g.fillStyle = css("--faint"); g.strokeStyle = css("--line");
+  for (let i = 0; i <= 4; i++) {
+    const v = lo + (hi - lo) * i / 4, yy = y(v);
+    g.beginPath(); g.moveTo(L, yy); g.lineTo(w - R, yy); g.stroke();
+    g.fillText(Math.abs(v) >= 1e5 ? v.toExponential(1) : String(+v.toPrecision(3)), 4, yy + 4);
+  }
+  for (const s of shown) {
+    g.strokeStyle = css(s.color); g.lineWidth = 1.6; g.beginPath();
+    let started = false;
+    for (const p of s.points) { if (p.ts < t0) continue; const px = x(p.ts), py = y(p.v); started ? g.lineTo(px, py) : g.moveTo(px, py); started = true; }
+    g.stroke();
+  }
+  view = { x, y, t0, shown };
+}
+canvas.addEventListener("mousemove", e => {
+  if (!view) return;
+  const r = canvas.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+  let best = null, bd = 14;
+  for (const s of view.shown) for (const p of s.points) {
+    if (p.ts < view.t0) continue;
+    const d = Math.hypot(view.x(p.ts) - mx, view.y(p.v) - my);
+    if (d < bd) { bd = d; best = { s, p }; }
+  }
+  const tip = $("tip");
+  if (!best) { tip.style.display = "none"; canvas.dataset.n = ""; return; }
+  const name = [...series].find(([, s]) => s === best.s)[0];
+  tip.textContent = `${name} = ${best.p.v}  ·  ${time(best.p.ts)}`;
+  tip.style.display = "block"; tip.style.left = e.clientX + 12 + "px"; tip.style.top = e.clientY + 12 + "px";
+  canvas.dataset.n = best.p.n;
+});
+canvas.addEventListener("mouseleave", () => { $("tip").style.display = "none"; });
+canvas.addEventListener("click", () => {
+  // Jump to the line a point came from, and select it.
+  const n = Number(canvas.dataset.n); const row = rows.get(n); if (!row) return;
+  follow = false; $("follow").classList.remove("on");
+  row.classList.remove("hide"); row.scrollIntoView({ block: "center" });
+  selected.clear(); selected.add(n); anchor = n; updateSelection();
+});
+$("window").onchange = () => redraw();
+$("plotBtn").onclick = () => { const hidden = $("plotWrap").classList.toggle("hidden"); $("plotBtn").classList.toggle("on", !hidden); plotDirty = true; };
+// Draw when data arrives; the timer only slides the time window (and may be throttled in a background tab).
+function redraw() {
+  try { draw(); }
+  catch (err) { $("plotEmpty").textContent = `plot: ${err.message}`; $("plotEmpty").style.display = "block"; }
+}
+setInterval(() => { if (plotDirty || Number($("window").value)) redraw(); }, 500);
+addEventListener("resize", () => redraw());
+
+// ---- status and controls ----
+function showState(state) {
+  paused = state === "paused";
+  $("dot").className = "dot " + (state === "open" ? "open" : state === "paused" ? "paused" : state === "waiting" ? "waiting" : "");
+  $("pause").textContent = paused ? t.resume : t.pause;
+  $("pause").classList.toggle("on", paused);
+  $("reset").disabled = paused || state === "no-board";
+}
+async function status() {
+  try {
+    const s = await api("/state");
+    $("port").textContent = s.port || "—";
+    showState(s.state);
+    const parts = [t.states[s.state] || s.state];
+    if (s.board) parts.push(s.board);
+    const stale = s.firmware === "stale";
+    if (t.firmware[s.firmware]) parts.push(t.firmware[s.firmware]);
+    $("meta").textContent = parts.join(" · ");
+    $("meta").classList.toggle("stale", stale);
+    if (s.state === "no-board") $("empty").textContent = t.noBoard;
+  } catch {}
+}
+$("reset").onclick = async () => { try { await api("/reset", {}); } catch (err) { toast(err.message); } };
+$("recover").onclick = async () => { try { const r = await api("/recover", {}); toast(/re-enumerated/.test(r.result) ? t.recovered : r.result); } catch (err) { toast(err.message); } };
+$("pause").onclick = async () => { try { await api(paused ? "/resume" : "/pause", {}); await status(); } catch (err) { toast(err.message); } };
+
+// ---- live lines: long polling ----
+async function poll() {
+  for (;;) {
+    try {
+      const r = await api(`/lines?since=${last}${last ? "&wait=1" : ""}`);
+      for (const line of r.lines) { addRow(line); collect(line); last = Math.max(last, line.n); }
+      if (r.lines.length) scrollDown();
+      if (plotDirty) redraw();
+      showState(r.state);
+    } catch (err) {
+      if (err.status === 401) { $("empty").textContent = err.message; $("empty").style.display = "block"; return; }
+      if (err.status === 404) { showState("no-board"); $("empty").textContent = t.noBoard; }
+      await new Promise(r => setTimeout(r, 2000));
+    }
+  }
+}
+status(); setInterval(status, 4000);
+poll();
+</script>
+</body>
+</html>

@@ -1,13 +1,15 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { Type } from "typebox";
-import { compare, describeFirmware, FLASH_ENTRY, type FirmwareState, firmwareStatus, type FlashRecord, isFirmwareFile, isFlashCommand, sourceState } from "./src/firmware.ts";
+import { compare, describeFirmware, FLASH_ENTRY, type FirmwareState, firmwareStatus, type FlashRecord, isFirmwareFile, isFlashCommand, sourceState, usesPort } from "./src/firmware.ts";
 import { usbIds } from "./src/board.ts";
 import { registerBoardTools } from "./src/board-tools.ts";
 import { BOARD_EVENT, type BoardEvent, type BoardPack, candidates, describePack, docsDir, ensureDocs, loadPacks, notePaths, projectBoard, setProjectBoard } from "./src/boards.ts";
 import { foldLogs } from "./src/fold.ts";
 import { checkCommand, checkWrite } from "./src/guard.ts";
+import { sharedHub } from "./src/hub.ts";
+import { LabApp } from "./src/web.ts";
 import { applyAction, emptyLedger, isEmpty, LEDGER_ENTRY, type Ledger, type LedgerAction, renderLedger } from "./src/ledger.ts";
 
 const NUDGE_TYPE = "pi-lab.stale-nudge";
@@ -87,7 +89,9 @@ export default function piLab(pi: ExtensionAPI): void {
   // pi-kb answers with the shelf it put the board's datasheets and notes on.
   pi.events?.on("pi-kb:board-shelf", data => { kbShelf = (data as { shelf?: string }).shelf; });
 
+  let projectDir = process.cwd();
   const usePack = async (ctx: ExtensionContext) => {
+    projectDir = ctx.cwd;
     const id = process.env.PI_LAB_BOARD ?? projectBoard(projectRoot(ctx.cwd));
     pack = packs.find(p => p.id === id);
     kbShelf = undefined;
@@ -106,15 +110,45 @@ export default function piLab(pi: ExtensionAPI): void {
     pi.events?.emit(BOARD_EVENT, event);
   };
 
-  registerBoardTools(pi, {
+  const board = registerBoardTools(pi, {
     flashed: recordFlash,
     downloadModeHint: () => pack?.buttons ? `The board is in download mode. ${pack.buttons}` : undefined,
+    cwd: () => projectDir,
   });
 
-  pi.on("session_start", async (_event, ctx) => { restore(ctx); await refresh(ctx); void usePack(ctx); });
+  // The board panel on the shared pi-web page (/lab/), next to pi-kb's and pi-sessions' pages.
+  const web = () => sharedHub(getAgentDir());
+  const panel = new LabApp(board);
+
+  pi.on("session_start", async (_event, ctx) => {
+    restore(ctx);
+    await refresh(ctx);
+    void usePack(ctx);
+    panel.session = {
+      status: () => ({ board: pack?.name, firmware: firmware.kind }),
+      ask: prompt => pi.sendUserMessage(prompt, ctx.isIdle() ? undefined : { deliverAs: "followUp" }),
+    };
+    // Mounted early (the server is not started) so the other pi-web pages link here.
+    web().mount(panel);
+  });
+
+  pi.on("session_shutdown", async event => {
+    panel.session = undefined;
+    // Reload brings new code: leave the shared server (it stops once every page has left) and mount again later.
+    if (event.reason === "quit" || event.reason === "reload") await web().unmount(panel.id);
+  });
   pi.on("session_tree", async (_event, ctx) => { restore(ctx); await refresh(ctx); });
 
   pi.on("agent_start", () => { editedFirmware = false; nudged = false; sinceProgress = 0; steppedBack = false; });
+
+  // A shell command that opens the board's port (a flasher, a monitor, a script) gets it: the hub lets go until the
+  // command is done, so it never meets "port busy".
+  const lentFor = new Map<string, (() => void)[]>();
+  const lendPort = async (toolCallId: string, toolName: string, input: Record<string, unknown>) => {
+    if (toolName !== "bash" || typeof input.command !== "string" || !usesPort(input.command)) return;
+    const giveBacks = await Promise.all(board.hubs().map(h => h.lend()));
+    if (giveBacks.length) lentFor.set(toolCallId, giveBacks);
+  };
 
   // Changes outside the project, and commands that permanently change a chip, need a person's yes.
   pi.on("tool_call", async (event, ctx) => {
@@ -123,11 +157,11 @@ export default function piLab(pi: ExtensionAPI): void {
     const verdict = event.toolName === "bash" && typeof input.command === "string" ? checkCommand(input.command, ctx.cwd)
       : (event.toolName === "edit" || event.toolName === "write") && typeof input.path === "string" ? checkWrite(input.path, ctx.cwd)
       : undefined;
-    if (!verdict) return;
+    if (!verdict) return lendPort(event.toolCallId, event.toolName, input);
     if (ctx.hasUI) {
       const what = typeof input.command === "string" ? input.command : String(input.path);
       const title = verdict.hardware ? "pi-lab: irreversible chip operation" : "pi-lab: change outside the project";
-      if (await ctx.ui.confirm(title, `${verdict.reason}\n\n${what}\n\nAllow it?`)) return;
+      if (await ctx.ui.confirm(title, `${verdict.reason}\n\n${what}\n\nAllow it?`)) return lendPort(event.toolCallId, event.toolName, input);
     }
     return { block: true, reason: `pi-lab blocked this: ${verdict.reason}${ctx.hasUI ? " The user declined." : " Nobody is available to approve it."}` };
   });
@@ -146,6 +180,8 @@ export default function piLab(pi: ExtensionAPI): void {
   });
 
   pi.on("tool_result", async (event, ctx) => {
+    for (const giveBack of lentFor.get(event.toolCallId) ?? []) giveBack();
+    lentFor.delete(event.toolCallId);
     if (event.toolName === "bash" && !event.isError && typeof event.input.command === "string" && isFlashCommand(event.input.command)) {
       await recordFlash(ctx, event.input.command);
       return;
@@ -220,14 +256,26 @@ export default function piLab(pi: ExtensionAPI): void {
   });
 
   pi.registerCommand("lab", {
-    description: "Debug ledger, firmware sync and board: [show | flashed | target <text> | clear | board [id | none]]",
+    description: "Board panel, debug ledger, firmware sync: [web [url | stop] | show | flashed | target <text> | clear | board [id | none]]",
     getArgumentCompletions: prefix => {
       const [first, second] = prefix.split(/\s+/);
       if (first === "board" && second !== undefined) return [...packs.map(p => p.id), "none"].filter(id => id.startsWith(second)).map(id => ({ value: `board ${id}`, label: id }));
-      return ["show", "flashed", "target", "clear", "board"].filter(s => s.startsWith(prefix)).map(s => ({ value: s, label: s }));
+      if (first === "web" && second !== undefined) return ["url", "stop"].filter(s => s.startsWith(second)).map(s => ({ value: `web ${s}`, label: s }));
+      return ["web", "show", "flashed", "target", "clear", "board"].filter(s => s.startsWith(prefix)).map(s => ({ value: s, label: s }));
     },
     handler: async (args, ctx) => {
       const [command = "show", ...rest] = args.trim().split(/\s+/);
+      if (command === "web") {
+        if (rest[0] === "stop") { await web().close(); ctx.ui.notify("Stopped the pi-web page (shared with the other pi-web pages).", "info"); return; }
+        web().mount(panel);
+        await web().start();
+        const url = web().url(panel.id) ?? "";
+        if (rest[0] === "url") { ctx.ui.notify(url, "info"); return; }
+        const [cmd, ...cmdArgs] = process.platform === "darwin" ? ["open"] : process.platform === "win32" ? ["cmd", "/c", "start", ""] : ["xdg-open"];
+        await pi.exec(cmd!, [...cmdArgs, url]).catch(() => undefined);
+        ctx.ui.notify(`Board panel: ${url.replace(/#.*/, "")}`, "info");
+        return;
+      }
       if (command === "board") {
         const id = rest[0];
         const root = projectRoot(ctx.cwd);

@@ -40,11 +40,30 @@ const ensureBoard = () => {
   if (!boardResponds()) { log("board still not responding: unplug and replug it, then rerun"); process.exit(3); }
 };
 
+// Flash the work tree's firmware on an erased chip, recovering the USB port between attempts.
+const flashClean = () => {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      idf(`idf.py build >/dev/null && idf.py -p ${port} erase-flash >/dev/null && idf.py -p ${port} flash >/dev/null`);
+      return;
+    } catch (error) {
+      if (attempt === 3 || !/No serial data received|Failed to connect/.test(String(error.stderr ?? error.stdout ?? error.message))) throw error;
+      log(`flash failed to connect, USB re-enumerate (attempt ${attempt})`);
+      try { execFileSync(join(bench, "common", "bin", "usb_reenumerate"), { stdio: "ignore" }); } catch {}
+      execFileSync("sleep", ["4"]);
+    }
+  }
+};
+const judge = () => {
+  flashClean();
+  return JSON.parse(idf(`python ${join(bench, "scenarios", scenario, "check.py")} ${work}`).trim().split("\n").pop());
+};
+
 log(`prepare ${scenario}`);
 execFileSync(join(bench, "prepare.sh"), [scenario, work], { stdio: "inherit", env: { ...process.env, BENCH_MINIMAL: minimal ? "1" : "" } });
 // Start every run from the buggy firmware on the board, with a clean NVS.
 ensureBoard();
-idf(`idf.py build >/dev/null && idf.py -p ${port} erase-flash >/dev/null && idf.py -p ${port} flash >/dev/null`);
+flashClean();
 
 const task = readFileSync(join(bench, "scenarios", scenario, "TASK.md"), "utf8");
 const prompt = `${task}\nWork autonomously: nobody will answer questions. When you are done, reply with the root cause and what you changed.`;
@@ -101,10 +120,16 @@ const boardCalls = calls.filter(c => c.name.startsWith("board_")).length;
 // Judge the code the agent left behind on a freshly flashed board.
 log("judge: build, flash, check");
 ensureBoard();
-let check;
+let check, firstCheck;
 try {
-  idf(`idf.py build >/dev/null && idf.py -p ${port} erase-flash >/dev/null && idf.py -p ${port} flash >/dev/null`);
-  check = JSON.parse(idf(`python ${join(bench, "scenarios", scenario, "check.py")} ${work}`).trim().split("\n").pop());
+  check = judge();
+  if (!check.pass) {
+    // The bugs are deterministic, so a second failure is the agent's; a pass means the board misbehaved the first time.
+    log(`judge failed (${check.detail}); recover the board and judge again`);
+    firstCheck = check;
+    ensureBoard();
+    check = judge();
+  }
 } catch (error) {
   check = { pass: false, detail: `build or flash failed: ${String(error.stderr ?? error.message).slice(-500)}` };
 }
@@ -113,6 +138,7 @@ writeFileSync(join(out, "diff.patch"), diff);
 
 const result = {
   scenario, agent, docs: minimal ? "minimal" : "full", model: model ?? "(default)", pass: check.pass, detail: check.detail,
+  ...(firstCheck ? { firstJudge: firstCheck.detail } : {}),
   minutes: Number(minutes.toFixed(1)), exitCode: exit, toolCalls: calls.length, flashes, serialCaptures: captures, ledgerCalls: ledger, kbCalls, boardCalls,
   tokens: { input: usage.input, output: usage.output }, costUsd: Number(usage.cost.toFixed(4)), finalText,
 };

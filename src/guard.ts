@@ -53,7 +53,8 @@ const HARDWARE: [RegExp, string][] = [
 const SYSTEM: [RegExp, string][] = [
   [/\bpip3?\b[^\n;|&]*\binstall\b[^\n;|&]*--break-system-packages\b/, "installs into the system Python"],
   // pip without a project virtual environment installs into whichever Python comes first: often ESP-IDF's.
-  [/^(?![^\n]*(?:\.venv|\bvenv\/|--target|\s-t\s))[^\n]*\b(?:pip3?|python3?\s+-m\s+pip)\s+install\b/m, "installs into a shared Python environment (the system's or the toolchain's)"],
+  // A pip inside a virtual environment's bin/ directory, or one that was just created, is fine wherever it lives.
+  [/^(?![^\n]*(?:venv|--target|\s-t\s|\/bin\/pip3?\s))[^\n]*\b(?:pip3?|python3?\s+-m\s+pip)\s+install\b/m, "installs into a shared Python environment (the system's or the toolchain's)"],
   [/\bsudo\s/, "runs as root"],
   [/\bbrew\s+(?:install|upgrade|uninstall|remove)\b/, "changes Homebrew packages"],
 ];

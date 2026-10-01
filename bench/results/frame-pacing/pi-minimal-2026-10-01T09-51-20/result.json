@@ -1,0 +1,22 @@
+{
+  "scenario": "frame-pacing",
+  "agent": "pi",
+  "docs": "minimal",
+  "model": "(default)",
+  "pass": true,
+  "detail": "fps readings: [50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50]",
+  "minutes": 2.6,
+  "exitCode": 0,
+  "toolCalls": 16,
+  "flashes": 2,
+  "serialCaptures": 6,
+  "ledgerCalls": 0,
+  "kbCalls": 0,
+  "boardCalls": 0,
+  "tokens": {
+    "input": 7536,
+    "output": 9546
+  },
+  "costUsd": 0.0149,
+  "finalText": "## Root cause\n\n`CONFIG_FREERTOS_HZ=100`, so each RTOS tick is 10 ms. The pacing loop computed the *remaining* time in whole milliseconds and passed it to `pdMS_TO_TICKS()`:\n\n```c\nint elapsed_ms = (int)((esp_timer_get_time() - start) / 1000);\nif (elapsed_ms < FRAME_PERIOD_MS)\n    vTaskDelay(pdMS_TO_TICKS(FRAME_PERIOD_MS - elapsed_ms));\n```\n\nEach frame does ~12 ms of work, leaving ~8 ms. `pdMS_TO_TICKS(8)` at 100 Hz = `(8*100)/1000` = **0 ticks**. `vTaskDelay(0)` does not block or yield, so the DSP task at priority 5 on core 0 spun in a tight 12 ms loop forever, never letting the priority-0 IDLE0 task run. That produced two symptoms:\n\n- Frame rate was ~83 fps (12 ms/frame) instead of 50.\n- IDLE0 was starved, so it could not feed the task watchdog → TWDT fired after 5 s.\n\n## Fix\n\nIn `main/main.c`, replaced the per-frame \"remaining time\" delay with an absolute periodic schedule, `vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(FRAME_PERIOD_MS))` (2 ticks = 20 ms). `vTaskDelayUntil` blocks until the next period boundary regardless of how much of the period was consumed by work, so frames now land on a steady 20 ms cadence and the task yields ~8 ms per period, letting IDLE0 feed the watchdog. The 12 ms `process_frame()` work was left unchanged, and the watchdog configuration (5 s, IDLE0/IDLE1 checks) was not touched.\n\nI also made the once-per-second log compute the rate from the actual elapsed window instead of using the raw count, since the window check runs once per frame and spans ~1020 ms; it now reports exactly `fps=50`.\n\nFlashed to `/dev/cu.usbmodem101` and verified over a 20 s run: every log line is `fps=50`, no watchdog/panic output."
+}

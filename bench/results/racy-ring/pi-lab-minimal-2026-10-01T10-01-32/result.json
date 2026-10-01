@@ -1,0 +1,22 @@
+{
+  "scenario": "racy-ring",
+  "agent": "pi-lab",
+  "docs": "minimal",
+  "model": "(default)",
+  "pass": true,
+  "detail": "12033 samples intact and in order (1003/s), no drops",
+  "minutes": 5,
+  "exitCode": 0,
+  "toolCalls": 51,
+  "flashes": 5,
+  "serialCaptures": 10,
+  "ledgerCalls": 17,
+  "kbCalls": 0,
+  "boardCalls": 15,
+  "tokens": {
+    "input": 46626,
+    "output": 16467
+  },
+  "costUsd": 0.0373,
+  "finalText": "Done. Only `main/ring.c` and `main/ring.h` are modified; `main/monitor.c` and `main/sample.h` are untouched, and the 1 kHz rate and 80 ms flush are unchanged.\n\n## Root cause\n\nThe stats line lies about the state of the ring, because `rb_push` was broken in two independent ways:\n\n1. **Publish-before-fill (the CRC/gap generator).** `rb_push` advanced `head` *before* copying the sample into `slots[slot]`:\n   ```c\n   uint32_t slot = head;\n   head = (slot + 1) % RB_SIZE;   /* consumer is now told the slot is ready */\n   slots[slot] = *s;              /* ...but it is only being filled here */\n   slots[slot].crc = sample_crc(&slots[slot]);\n   ```\n   The monitor (CPU1) could pop a half-written slot while the esp_timer producer (CPU0) was still filling it. The copied payload and the copied `crc` field came from different moments, so `sample_crc(&s) != s.crc` → `crc_err`. The bad sample is `continue`d without updating `expect`, so the next good sample also looks discontinuous → `gaps`. This was the dominant error (~175/s).\n   *Proof:* fixing only this ordering (Experiment A) drove `crc_err` to exactly 0 for 10 s while the full-check bug remained.\n\n2. **Full test can never be true.** `rb_count()` returns `(head - tail + RB_SIZE) % RB_SIZE`, i.e. 0…RB_SIZE−1, so `if (rb_count() > RB_SIZE - 1)` is never satisfied. `rb_push` therefore always \"succeeded\" and silently overwrote unread slots whenever the ring filled (e.g. during the 80 ms blocking flush), and `dropped` stayed 0 forever — matching the `dropped=0` symptom.\n   *Proof:* Experiment A (ordering fixed, old full test, 64 slots) gave `crc_err=0` but still lost ~60 samples/s and grew `gaps` ~1/s. With the `>=` fix, `dropped` correctly reported the overflow.\n\n3. **The ring was also too small.** 64 slots cannot hold the 80 samples produced during the monitor's 80 ms non-blocking-free flush, so even with a correct full test it legitimately dropped ~17–23/s. `RB_SIZE` is now 256 (~250 ms of headroom, still only 16 KB).\n\n## What I changed\n\n- `main/ring.c`:\n  - Fill `slots[h]` (including its CRC) completely, then publish with a **release** store to `head`; the consumer uses an **acquire** load of `head` (and release/acquire for `tail`). The consumer can never see a slot before it is fully written.\n  - Corrected the full condition to `rb_count(h, t) >= RB_SIZE - 1` so one slot is always kept free (head==tail stays \"empty\") and `dropped` is reported.\n- `main/ring.h`: `RB_SIZE` 64 → 256 so the ring absorbs the 80 ms flush burst plus scheduler jitter.\n\nFinal board run (29 consecutive 1-second reports): `stats ok=1003 … 29337 crc_err=0 gaps=0 dropped=0`, with `ok` advancing at the full ~1000 samples/s."
+}

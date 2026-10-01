@@ -1,0 +1,23 @@
+{
+  "scenario": "sensor-queue",
+  "agent": "pi-lab",
+  "docs": "minimal",
+  "model": "(default)",
+  "pass": true,
+  "detail": "90 readings reported in order with correct temperatures",
+  "firstJudge": "only 0 report lines in 9 s (expected about 85)",
+  "minutes": 2.9,
+  "exitCode": 0,
+  "toolCalls": 27,
+  "flashes": 3,
+  "serialCaptures": 4,
+  "ledgerCalls": 8,
+  "kbCalls": 0,
+  "boardCalls": 7,
+  "tokens": {
+    "input": 31797,
+    "output": 14634
+  },
+  "costUsd": 0.0289,
+  "finalText": "Fixed and verified on hardware.\n\n## Root cause\n\nThe queue transported **pointers, not readings**. In `sensor_task`:\n\n```c\nchar line[48];              // one buffer, declared once, reused every iteration\n...\nsnprintf(line, ...);        // overwritten for each reading\nchar *msg = line;\nxQueueSend(readings, &msg, ...);   // enqueues &line every time\n```\n\nAll 5 items pushed in a burst held the **same address** — `sensor_task`'s single stack buffer `line`. Because `report_task` slept 30 ms before dequeuing/printing (and runs at lower priority, so the sensor's whole burst completed first), every pointer was dereferenced after `line` had been overwritten with the last reading of the burst. Hence the board printed the burst's final seq/temp 5 times (seq=4 ×5, seq=9 ×5, ...), never the earlier readings.\n\n## Fix (`main/main.c`)\n\nThe queue now carries the reading **by value**:\n\n- Added `reading_t { char text[48]; }` and `#define LINE_LEN 48`.\n- `sensor_task` formats into a local `reading_t r` and sends `&r` (a copy is made into the queue).\n- `report_task` receives into its own `reading_t r` and prints `r.text`.\n- Queue created with `sizeof(reading_t)` instead of `sizeof(char *)`.\n\nReport line format (`report seq=<n> temp=<t>`), burst size (5) and burst interval (500 ms) are unchanged.\n\n## Hardware verification\n\nClean build (`rm -rf build`), flash, and fresh boot show every reading exactly once in order:\n\n```\nreport seq=0 temp=20.00\nreport seq=1 temp=20.37\n...\nreport seq=24 temp=22.88\n```\n\nNo gaps, no duplicates, no \"queue full\" drops, and each temperature matches `fake_temperature(seq)`. Reproduced across three runs including a from-scratch rebuild; the ledger records this as verified fact F2 with hypothesis H1 confirmed."
+}

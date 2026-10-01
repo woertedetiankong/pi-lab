@@ -1,0 +1,51 @@
+diff --git a/main/ring.c b/main/ring.c
+index ff43f97..f03b527 100644
+--- a/main/ring.c
++++ b/main/ring.c
+@@ -12,15 +12,27 @@ static uint32_t rb_count(void)
+ 
+ bool rb_push(const sample_t *s)
+ {
+-    if (rb_count() > RB_SIZE - 1) {
++    uint32_t slot = head;
++    uint32_t next = (slot + 1) % RB_SIZE;
++
++    /* rb_count() is already reduced modulo RB_SIZE, so the old
++     * `rb_count() > RB_SIZE - 1` test could never fire and the producer
++     * silently overwrote unread samples. Full means the next head would
++     * collide with the consumer's tail. */
++    if (next == tail) {
+         dropped++;
+         return false;
+     }
+-    /* Claim the slot first so the consumer can start on it right away, then fill it in. */
+-    uint32_t slot = head;
+-    head = (slot + 1) % RB_SIZE;
+-    slots[slot] = *s;
+-    slots[slot].crc = sample_crc(&slots[slot]);
++
++    /* Build the complete, checksummed sample privately, then copy it into the
++     * slot and only publish the new head afterwards. The release barrier keeps
++     * the slot stores before the head store on the wire, so the consumer can
++     * never observe a partially written or stale slot. */
++    sample_t tmp = *s;
++    tmp.crc = sample_crc(&tmp);
++    slots[slot] = tmp;
++    __sync_synchronize(); /* release: slot contents become visible before head */
++    head = next;
+     return true;
+ }
+ 
+diff --git a/main/ring.h b/main/ring.h
+index 73e8c55..42280bf 100644
+--- a/main/ring.h
++++ b/main/ring.h
+@@ -5,7 +5,7 @@
+ 
+ /* Single-producer, single-consumer ring buffer of samples. */
+ 
+-#define RB_SIZE 64
++#define RB_SIZE 256
+ 
+ /* Producer side (sampler). Stamps the sample's CRC. Returns false and counts a drop when the ring is full. */
+ bool rb_push(const sample_t *s);

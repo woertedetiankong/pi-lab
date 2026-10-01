@@ -1,0 +1,22 @@
+{
+  "scenario": "sensor-queue",
+  "agent": "pi-lab",
+  "docs": "minimal",
+  "model": "(default)",
+  "pass": true,
+  "detail": "90 readings reported in order with correct temperatures",
+  "minutes": 4.1,
+  "exitCode": 0,
+  "toolCalls": 32,
+  "flashes": 5,
+  "serialCaptures": 6,
+  "ledgerCalls": 7,
+  "kbCalls": 0,
+  "boardCalls": 11,
+  "tokens": {
+    "input": 26070,
+    "output": 8685
+  },
+  "costUsd": 0.0203,
+  "finalText": "Done. The board now runs the fixed firmware and verifies clean.\n\n## Root cause\n\nThe queue was created to hold **pointers**:\n\n```c\nstatic QueueHandle_t readings;\n...\nreadings = xQueueCreate(QUEUE_LEN, sizeof(char *));\n...\nchar line[48];               // one buffer, allocated once\n...\nsnprintf(line, ... \"<seq/temp>\" ...);\nchar *msg = line;            // always the SAME address\nxQueueSend(readings, &msg, ...);   // enqueues the pointer, not the text\n```\n\n`sensor_task` reused the **single stack buffer `line`** for every reading, so all 5 queue entries in a burst held the same pointer. The reporter is slower (30 ms per report), so by the time it read each entry the sensor had already overwritten the buffer with the *last* reading of the burst. Result: every burst printed 5 identical lines carrying only the last seq/temp (seq=4 ×5, seq=9 ×5, …), and readings 0–3, 5–8, … were never observable. There was no \"dropped\" warning because the *sends* all succeeded — the queue entries existed, they just all aliased one buffer.\n\nReproduced deterministically on a clean build of the original source (`seq=4`/`seq=9`/`seq=14` each ×5).\n\n## Fix (`main/main.c`)\n\nQueued the reading **by value** instead of by pointer, so each entry owns its own data:\n\n```c\ntypedef struct { uint32_t seq; int temp_centi; } reading_t;\n...\nreadings = xQueueCreate(QUEUE_LEN, sizeof(reading_t));\n...\nreading_t r = { .seq = seq, .temp_centi = fake_temperature(seq) };\nxQueueSend(readings, &r, pdMS_TO_TICKS(10));\n...\nif (xQueueReceive(readings, &r, portMAX_DELAY)) {\n    vTaskDelay(pdMS_TO_TICKS(30));\n    printf(\"report seq=%\" PRIu32 \" temp=%d.%02d\\n\", r.seq, r.temp_centi/100, r.temp_centi%100);\n}\n```\n\nKept the exact `report seq=<n> temp=<t>` format, `FIFO_BURST 5`, `BURST_INTERVAL_MS 500`, and `QUEUE_LEN 4`.\n\n## Verification (on hardware)\n\nClean build + flash, then serial captured 120+ reports:\n- seq 0,1,2,… strictly in order, no gaps or duplicates\n- every temperature matches `fake_temperature(seq)` exactly\n- no drops / no \"queue full\" warnings"
+}

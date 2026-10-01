@@ -1,0 +1,22 @@
+{
+  "scenario": "boot-counter",
+  "agent": "pi-lab",
+  "docs": "minimal",
+  "model": "(default)",
+  "pass": true,
+  "detail": "boot counts across three resets: [2, 3, 4]",
+  "minutes": 6.3,
+  "exitCode": 0,
+  "toolCalls": 55,
+  "flashes": 5,
+  "serialCaptures": 20,
+  "ledgerCalls": 10,
+  "kbCalls": 0,
+  "boardCalls": 23,
+  "tokens": {
+    "input": 94002,
+    "output": 30123
+  },
+  "costUsd": 0.0714,
+  "finalText": "Done. The fix is flashed and verified on the board.\n\n## Root cause\n\nIn `main/main.c`, `storage_init()` had a missing operand in a boolean condition:\n\n```c\nif (err == ESP_ERR_NVS_NO_FREE_PAGES || ESP_ERR_NVS_NEW_VERSION_FOUND) {\n```\n\n`ESP_ERR_NVS_NEW_VERSION_FOUND` is the non-zero constant `0x1110` (`ESP_ERR_NVS_BASE + 0x10`), not a comparison. So the right-hand side was always true, the whole `if` was **unconditionally true**, and the firmware called `nvs_flash_erase()` + reformatted NVS **on every single boot**.\n\nConsequences matching the report:\n- NVS is wiped before `load_boot_count()` reads it → always logs `no boot count stored yet`, `boot_count=1`, then saves `1`.\n- The value *is* written to flash each boot (I confirmed with `esptool read_flash 0x9000`: a valid `stats`/`boot_count` page with value 1), but it is erased again on the next reset. Hence permanently `boot_count=1`.\n\n## Fix\n\nOne line, in `storage_init()`:\n\n```c\nif (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {\n```\n\nNVS is now erased only when `nvs_flash_init()` actually returns one of those errors. Log format is untouched.\n\n## Verification (board: M5StickS3, /dev/cu.usbmodem101)\n\n- Clean rebuild (`build/` deleted; app version `11a0ff8-dirty`).\n- Consecutive resets via `board_serial`: `boot_count=9`, then `10`, then `11`, each with a matching `saved boot_count=...`, and no `no boot count stored yet`.\n\nNote: the save still happens 1.5 s after boot (the existing \"let the power rail settle\" delay), so a reset *within* that window would not persist the increment. It is not the cause of the always-1 symptom, and I left it unchanged to keep the fix minimal, but it is a residual fragility if very fast resets are expected."
+}

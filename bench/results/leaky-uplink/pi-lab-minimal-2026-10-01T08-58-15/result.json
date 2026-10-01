@@ -1,0 +1,22 @@
+{
+  "scenario": "leaky-uplink",
+  "agent": "pi-lab",
+  "docs": "minimal",
+  "model": "(default)",
+  "pass": true,
+  "detail": "ran 20 s without crashing, 50 frames/s, free heap 391916 -> 391916",
+  "minutes": 2.3,
+  "exitCode": 0,
+  "toolCalls": 24,
+  "flashes": 2,
+  "serialCaptures": 3,
+  "ledgerCalls": 7,
+  "kbCalls": 0,
+  "boardCalls": 5,
+  "tokens": {
+    "input": 20231,
+    "output": 5174
+  },
+  "costUsd": 0.0133,
+  "finalText": "Done. Fix is flashed, verified on the board, and only `main/main.c` changed.\n\n## Root cause\n\n`main/main.c`'s `send_with_retry()` allocated a fresh encoded buffer on every attempt:\n\n```c\npkt.data = encode_frame(frame, len, &pkt.len);\n...\nesp_err_t err = link_send(&pkt);\nif (err == ESP_OK) { return ESP_OK; }\n/* <-- pkt.data from a failed attempt was never freed */\n```\n\nPer `link.h`, `link_send()` only takes ownership of `pkt->data` on `ESP_OK`; on any error the **caller still owns it**. The radio is busy on every 5th call (`link.c` returns `ESP_ERR_TIMEOUT`) and the queue can also reject, so roughly 20–25% of attempts leaked a 4096+8 = 4104-byte buffer. At 50 Hz that's ~50 KB/s of leaked heap.\n\nSerial from the original firmware confirmed it: `heap_free` fell monotonically from 391916 → 14088 in ~7.5 s, then `sent` froze at 360 while `failed` climbed forever (`queue=0`, so the transmit task was healthy — capacity was fine, memory was not). Once the heap is too fragmented for a 4104-byte allocation, every frame fails permanently.\n\n## Fix\n\nFree the caller-owned buffer on the error path before retrying:\n\n```c\nesp_err_t err = link_send(&pkt);\nif (err == ESP_OK) {\n    return ESP_OK;\n}\n/* link_send only takes ownership of pkt.data on ESP_OK; on error the\n * caller still owns it, so free it before retrying. */\nfree(pkt.data);\nESP_LOGW(TAG, \"send failed (%s), retrying\", esp_err_to_name(err));\n```\n\nI did not touch `link.c`/`link.h`, the frame size, or the 50 Hz rate.\n\n## Verification on the board\n\nReflashed the fixed build and ran 40 s: reached `stats seq=2000 sent=2001 retries=500 failed=0 queue=0 heap_free=391916` — heap exactly at its boot value, no decline, and sends never stop."
+}

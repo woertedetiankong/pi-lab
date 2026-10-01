@@ -1,0 +1,22 @@
+{
+  "scenario": "imu-zeros",
+  "agent": "pi",
+  "docs": "minimal",
+  "model": "(default)",
+  "pass": true,
+  "detail": "|a| averages 0.997 g at rest over 33 readings",
+  "minutes": 3.7,
+  "exitCode": 0,
+  "toolCalls": 45,
+  "flashes": 4,
+  "serialCaptures": 9,
+  "ledgerCalls": 0,
+  "kbCalls": 0,
+  "boardCalls": 0,
+  "tokens": {
+    "input": 33876,
+    "output": 24138
+  },
+  "costUsd": 0.045,
+  "finalText": "Fixed and verified on the board. Here's the summary.\n\n## Root cause\n\nThe BMI270 was never actually initialized — its data registers stayed at zero, so `|a|` was `0.000`. Three bugs in `main/bmi270.c` combined to cause this:\n\n1. **Config file uploaded while advanced power save (APS) was still enabled.** After POR/soft reset the BMI270 comes up in APS mode. The datasheet (§4.4) requires disabling it (`PWR_CONF = 0x00`) and waiting ≥450 µs **before** the 8 kB config upload. The code wrote `PWR_CONF = 0x00` *after* `upload_config()`, so the upload was rejected. I confirmed this on hardware: reading `INTERNAL_STATUS` (0x21) returned `0x00` = `not_init` instead of `0x01` = `init_ok`.\n\n2. **The inter-write delay was effectively zero.** `write_reg()` used `vTaskDelay(pdMS_TO_TICKS(2))`, but this project has `CONFIG_FREERTOS_HZ=100`, so `pdMS_TO_TICKS(2)` rounds to **0 ticks**. APS mode requires ≥450 µs between register writes, so the upload ran too fast.\n\n3. **`BMI270_ACC_RANGE` pointed at the wrong register.** It was `0x42`, which is `GYR_CONF`; the accelerometer range register is `0x41` (`ACC_RANGE`). The sensor therefore stayed at its reset default of `±8 g` while the code divided by the `±2 g` scale (16384 LSB/g) — that would have produced ~0.25 g even after fixing the upload.\n\n## Changes (`main/bmi270.c`)\n\n- Disable APS (`PWR_CONF = 0x00`) **before** `upload_config()`, with a ≥450 µs wait.\n- Replaced `vTaskDelay(pdMS_TO_TICKS(2))` with `esp_rom_delay_us(500)` so write spacing is independent of the FreeRTOS tick rate.\n- Corrected `BMI270_ACC_RANGE` from `0x42` to `0x41`.\n- Added an `INTERNAL_STATUS` check (fails loudly if the config didn't load) and a chip-ID sanity check.\n- Added a 100 ms settle after enabling so the first logged sample is valid.\n\n## Result on the board\n\n```\nI (98) bmi270: chip id 0x24\nI (608) bmi270: init done (internal_status=0x01)\naccel x=-0.029 y=-0.021 z=0.995 |a|=0.996\naccel x=-0.030 y=-0.023 z=0.996 |a|=0.997\n...\n```\n\n`|a|` is now ≈0.996–0.998 g at rest, the log format is unchanged, and it still reads the real BMI270 at 0x68 over GPIO47/48."
+}

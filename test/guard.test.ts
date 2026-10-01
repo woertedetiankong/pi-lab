@@ -33,6 +33,9 @@ test("everyday commands pass", () => {
     "idf.py -p /dev/cu.usbmodem101 flash",
     "python tools/serial_capture.py --seconds 8 > /tmp/log.txt",
     "python3 -m venv .venv && .venv/bin/pip install pypdf",
+    // From a benchmark run: a throwaway virtual environment outside the project.
+    "cd /tmp && python3 -m venv esptool_old_venv 2>&1 | tail -2 && /tmp/esptool_old_venv/bin/pip install -q esptool==4.8",
+    "/opt/envs/tools/bin/pip install pyserial",
     "esptool.py --port /dev/cu.usbmodem101 read_flash 0x9000 0x6000 nvs.bin",
     "espefuse.py --port /dev/cu.usbmodem101 summary",
   ]) assert.equal(cmd(c), undefined, c);
@@ -43,6 +46,8 @@ test("what benchmark agents did is held back", () => {
   assert.match(cmd("sed -i 's/ESP_LOGD/ESP_LOGI/' ~/.espressif/v6.0.1/esp-idf/components/nvs_flash/src/nvs_page.cpp")!.reason, /toolchain/);
   assert.match(cmd("python3 -m pip install --break-system-packages pypdf --quiet")!.reason, /system Python/);
   assert.match(cmd("source ~/.espressif/v6.0.1/esp-idf/export.sh >/dev/null 2>&1; pip install pypdf 2>&1 | tail -3")!.reason, /shared Python/);
+  assert.match(cmd("which pdftotext mutool qpdf gs 2>/dev/null; pip3 install pypdf 2>&1 | tail -2")!.reason, /shared Python/);
+  assert.match(cmd("sudo -n true 2>&1 && echo SUDO_OK")!.reason, /root/);
   assert.ok(checkWrite("/Users/dev/.espressif/v6.0.1/esp-idf/components/nvs_flash/src/nvs_api.cpp", cwd, roots));
   assert.equal(checkWrite("main/main.c", cwd, roots), undefined);
   assert.equal(checkWrite("/tmp/scratch.c", cwd, roots), undefined);

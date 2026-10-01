@@ -1,0 +1,22 @@
+{
+  "scenario": "leaky-uplink",
+  "agent": "pi-lab",
+  "docs": "minimal",
+  "model": "(default)",
+  "pass": true,
+  "detail": "ran 20 s without crashing, 50 frames/s, free heap 391916 -> 391916",
+  "minutes": 3.9,
+  "exitCode": 0,
+  "toolCalls": 28,
+  "flashes": 3,
+  "serialCaptures": 5,
+  "ledgerCalls": 9,
+  "kbCalls": 0,
+  "boardCalls": 8,
+  "tokens": {
+    "input": 37678,
+    "output": 5888
+  },
+  "costUsd": 0.0198,
+  "finalText": "Done. The board now keeps sending indefinitely.\n\n## Root cause\n\n`main/link.h` documents the ownership contract: on `ESP_OK` the link takes ownership of `pkt->data` and frees it; **on any error the caller keeps ownership and must free it**.\n\n`send_with_retry()` in `main/main.c` called `encode_frame()` (a `malloc(len + 8)` = 4104 bytes) on every attempt, but only the success path released the buffer. When the simulated radio returned `ESP_ERR_TIMEOUT` (1 in 5 calls, plus queue-full), the buffer was never freed — a ~4 KB leak per failed attempt.\n\nAt 50 Hz with ~20% failures that is ~52 KB/s of lost heap. The serial stats showed it exactly:\n\n```\nstats seq=0   ... retries=0  heap_free=391916\nstats seq=250 ... retries=62 heap_free=129524\nstats seq=350 ... retries=87 heap_free=23056\nstats seq=400 sent=360 retries=90 failed=41 heap_free=14088\n... sent=360 frozen, failed growing +50 every second\n```\n\nOnce heap was exhausted, `encode_frame()` returned `NULL` on every iteration, so `send_with_retry()` bailed out with `ESP_ERR_NO_MEM` before ever retrying — every send failed forever.\n\n## Fix\n\nOne change in `main/main.c`, honoring the link's documented ownership rule:\n\n```c\nesp_err_t err = link_send(&pkt);\nif (err == ESP_OK) {\n    return ESP_OK;\n}\n/* link_send only takes ownership on ESP_OK; free the packet on failure. */\nfree(pkt.data);\nESP_LOGW(TAG, \"send failed (%s), retrying\", esp_err_to_name(err));\nretries++;\n```\n\n`link.c`, `link.h`, the frame size, and the 50 Hz rate are untouched.\n\n## Verification\n\nClean rebuild (`rm -rf build`) and reflash; captured over 60+ seconds:\n\n```\nstats seq=0    sent=1    retries=0   failed=0 heap_free=391916\nstats seq=1950 sent=1951 retries=487 failed=0 heap_free=391916\nstats seq=3000 sent=3001 retries=750 failed=0 heap_free=391916\n```\n\n`heap_free` is flat, `sent` tracks `seq`, `failed` stays 0 — the occasional `ESP_ERR_TIMEOUT` retries happen as designed and no memory is lost."
+}

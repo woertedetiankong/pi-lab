@@ -1,0 +1,22 @@
+{
+  "scenario": "frame-pacing",
+  "agent": "pi",
+  "docs": "minimal",
+  "model": "(default)",
+  "pass": true,
+  "detail": "fps readings: [50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50]",
+  "minutes": 12.4,
+  "exitCode": 0,
+  "toolCalls": 81,
+  "flashes": 3,
+  "serialCaptures": 36,
+  "ledgerCalls": 0,
+  "kbCalls": 0,
+  "boardCalls": 0,
+  "tokens": {
+    "input": 45139,
+    "output": 61052
+  },
+  "costUsd": 0.11,
+  "finalText": "Done. Fixed, flashed, and verified on the board.\n\n## Root cause\n\nThe DSP loop paced frames with a *remainder* delay that got truncated to zero by the RTOS tick rate:\n\n```c\nint elapsed_ms = (esp_timer_get_time() - start) / 1000;\nif (elapsed_ms < FRAME_PERIOD_MS) {\n    vTaskDelay(pdMS_TO_TICKS(FRAME_PERIOD_MS - elapsed_ms));\n}\n```\n\n- `CONFIG_FREERTOS_HZ=100` → 1 tick = **10 ms**.\n- `process_frame()` takes ~12 ms, so with a 20 ms frame period the remainder is ~8 ms.\n- `pdMS_TO_TICKS(20 - 12)` = `pdMS_TO_TICKS(8)` = `(8 * 100) / 1000` = **0 ticks** (integer truncation).\n- `vTaskDelay(0)` does **not** block or yield in FreeRTOS, so the loop immediately started the next frame.\n\nResult on hardware: frames ran back-to-back at ~12 ms → `fps=84` instead of 50, and because the task never blocked, the CPU0 idle task never ran, so the task watchdog fired (`IDLE0 (CPU 0)` did not reset in time, `dsp` running). This was confirmed on the board before the fix (captured `fps=84` plus repeated `task_wdt` backtraces).\n\n## Fix (`main/main.c`)\n\n- Replaced the remainder sleep with **`vTaskDelayUntil()`** anchored to an absolute tick deadline and a fixed `period = pdMS_TO_TICKS(FRAME_PERIOD_MS)` (= 2 ticks = exactly 20 ms). The task now blocks every frame, so the idle task runs (watchdog fed) and the frame period is exact regardless of how long `process_frame()` takes.\n- Made the 1-second report window tick-based (100 ticks), so it logs exactly once per second and reports the true 50 frames/s (the old esp_timer window closed one 20 ms frame late and printed 51).\n- `process_frame()` is unchanged (still ~12 ms/frame), and no watchdog setting in `sdkconfig` was touched.\n\n## Verified on board\n\n```\nI (5093) dsp: fps=50\nI (6093) dsp: fps=50\n...\nI (20093) dsp: fps=50\n```\nLogged once per 1000 ms for 16+ seconds with **no `task_wdt` messages**.\n\nSide note: the original tight loop had wedged the USB-Serial-JTAG peripheral (no serial output, esptool couldn't connect). I recovered it with a USB bus reset before flashing; the fixed firmware yields normally, so the port stays responsive."
+}

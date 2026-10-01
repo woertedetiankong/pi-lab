@@ -1,0 +1,22 @@
+{
+  "scenario": "boot-counter",
+  "agent": "pi-lab",
+  "docs": "minimal",
+  "model": "(default)",
+  "pass": true,
+  "detail": "boot counts across three resets: [2, 3, 4]",
+  "minutes": 6.2,
+  "exitCode": 0,
+  "toolCalls": 72,
+  "flashes": 4,
+  "serialCaptures": 13,
+  "ledgerCalls": 13,
+  "kbCalls": 0,
+  "boardCalls": 13,
+  "tokens": {
+    "input": 95429,
+    "output": 42617
+  },
+  "costUsd": 0.092,
+  "finalText": "Done. The counter now persists and increments across resets, with the log format unchanged.\n\n## Root cause\n\nIn `main/main.c`, `storage_init()` had a broken guard:\n\n```c\nif (err == ESP_ERR_NVS_NO_FREE_PAGES || ESP_ERR_NVS_NEW_VERSION_FOUND) {\n```\n\nThe second comparison is missing `err ==`. `ESP_ERR_NVS_NEW_VERSION_FOUND` is a **nonzero constant**, so in C it evaluates as a boolean `true`. The whole condition is therefore always true.\n\nConsequence: on **every** boot the erase branch ran — `nvs_flash_erase()` wiped the NVS partition, then `nvs_flash_init()` re-created it empty. So `nvs_get_u32(\"boot_count\")` always returned `ESP_ERR_NVS_NOT_FOUND`, the app logged \"no boot count stored yet\", and `boot_count` restarted at 1 no matter how many times the device reset. The write itself was fine; the data was being erased at the start of the next boot before it could be read.\n\n### How I confirmed it\n- Reproduced the symptom: two consecutive resets each logged `no boot count stored yet` / `boot_count=1` even though the previous boot logged `saved boot_count=1`.\n- Dumped the NVS region with esptool and verified the page header and both item CRC32s were valid — so the data *was* physically persisting; the erasure was software, not flash retention.\n- Instrumented `storage_init()` temporarily. The log showed `nvs_flash_init -> ESP_OK (0x0)` immediately followed by `erase branch taken`, proving the condition was always true.\n\n## What I changed\n\n`main/main.c`, one line:\n\n```c\nif (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {\n```\n\nThe diagnostic logging was removed, so no log lines or formats changed.\n\n## Verification on the board\nAfter a clean rebuild (`build/` removed) and flash (App version `65546bb-dirty`, ELF `ce766590a`), consecutive resets produced `boot_count=8` then `boot_count=9`, each followed by the normal `saved boot_count=N`. Earlier I also saw `2 → 3 → 4`. The count now survives resets and increments by one each boot."
+}

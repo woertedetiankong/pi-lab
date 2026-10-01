@@ -1,0 +1,22 @@
+{
+  "scenario": "frame-pacing",
+  "agent": "pi-lab",
+  "docs": "minimal",
+  "model": "(default)",
+  "pass": true,
+  "detail": "fps readings: [51, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50]",
+  "minutes": 4.4,
+  "exitCode": 0,
+  "toolCalls": 37,
+  "flashes": 4,
+  "serialCaptures": 6,
+  "ledgerCalls": 12,
+  "kbCalls": 0,
+  "boardCalls": 10,
+  "tokens": {
+    "input": 25423,
+    "output": 19075
+  },
+  "costUsd": 0.0335,
+  "finalText": "Done. Root cause found and fixed on the board.\n\n## Root cause\n\n`CONFIG_FREERTOS_HZ=100`, so one FreeRTOS tick is 10 ms. Each frame does ~12 ms of work, leaving `FRAME_PERIOD_MS - elapsed_ms = 20 - 12 = 8` ms to sleep. The code did:\n\n```c\nvTaskDelay(pdMS_TO_TICKS(FRAME_PERIOD_MS - elapsed_ms));  // pdMS_TO_TICKS(8) == 0\n```\n\n`pdMS_TO_TICKS(8)` truncates to **0 ticks**, so `vTaskDelay(0)` returns immediately without blocking. The task never yielded: it free-ran at the work-bound rate of ~83 fps (logged `fps=84`) and starved `IDLE0` on CPU 0, so the 5 s task watchdog kept firing (`task_wdt: IDLE0 (CPU 0) did not reset the watchdog`, `CPU 0: dsp`).\n\n## Fix (`main/main.c`)\n\nReplaced the \"sleep the remainder\" arithmetic with the standard tick-based periodic deadline, so no sub-tick remainder is ever computed:\n\n```c\nTickType_t last_wake = xTaskGetTickCount();\nconst TickType_t period = pdMS_TO_TICKS(FRAME_PERIOD_MS);  // 2 ticks = 20 ms\n...\nprocess_frame();\nframes++;\nvTaskDelayUntil(&last_wake, period);\n```\n\nThe task now blocks each frame until the absolute next-deadline tick (20 ms = exactly 2 ticks), yielding ~8 ms of CPU per frame to `IDLE0`. `process_frame()` (the 12 ms work) is unchanged.\n\nI also made the once-a-second counter advance on an exact 1 s grid (`window += 1000000` instead of `window = esp_timer_get_time()`), because resetting to \"now\" after overshooting made the log measure a 1.02 s window and print `fps=51` even though the real rate was 50.\n\n## Verification on the board\n\n- Unmodified firmware: `dsp: fps=84` + repeated `task_wdt` IDLE0 triggers.\n- After the fix, clean rebuild and flash: `dsp: fps=50` at exact 1000 ms intervals, no `task_wdt` over a 44 s run.\n\nNot touched: `CONFIG_FREERTOS_HZ=100`, task watchdog still enabled (5 s, IDLE0/IDLE1 checked), and the per-frame work is the same (~12 ms). Only `main/main.c` changed."
+}

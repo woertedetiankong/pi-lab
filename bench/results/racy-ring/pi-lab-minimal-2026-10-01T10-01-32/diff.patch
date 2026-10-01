@@ -1,0 +1,99 @@
+diff --git a/main/ring.c b/main/ring.c
+index ff43f97..4cf7f38 100644
+--- a/main/ring.c
++++ b/main/ring.c
+@@ -1,40 +1,57 @@
+ #include "ring.h"
+ 
+ static sample_t slots[RB_SIZE];
+-static volatile uint32_t head; /* next slot the producer writes */
+-static volatile uint32_t tail; /* next slot the consumer reads */
+-static volatile uint32_t dropped;
+ 
+-static uint32_t rb_count(void)
++/* head and tail are monotonically increasing positions modulo RB_SIZE, each
++ * owned by exactly one side: the producer writes head, the consumer writes
++ * tail. The non-owning side reads them with acquire ordering so that the slot
++ * payload is guaranteed visible before the index update is. */
++static uint32_t head; /* next slot the producer will claim */
++static uint32_t tail; /* next slot the consumer will read */
++static uint32_t dropped;
++
++static uint32_t rb_count(uint32_t h, uint32_t t)
+ {
+-    return (head - tail + RB_SIZE) % RB_SIZE;
++    return (h - t + RB_SIZE) % RB_SIZE;
+ }
+ 
+ bool rb_push(const sample_t *s)
+ {
+-    if (rb_count() > RB_SIZE - 1) {
++    uint32_t h = __atomic_load_n(&head, __ATOMIC_RELAXED); /* producer owns head */
++    uint32_t t = __atomic_load_n(&tail, __ATOMIC_ACQUIRE); /* observe consumer progress */
++
++    /* With count taken modulo RB_SIZE, "full" is RB_SIZE-1 occupied slots:
++       that keeps one slot free so head==tail still unambiguously means empty. */
++    if (rb_count(h, t) >= RB_SIZE - 1) {
+         dropped++;
+         return false;
+     }
+-    /* Claim the slot first so the consumer can start on it right away, then fill it in. */
+-    uint32_t slot = head;
+-    head = (slot + 1) % RB_SIZE;
+-    slots[slot] = *s;
+-    slots[slot].crc = sample_crc(&slots[slot]);
++
++    /* Fill the slot completely (including its CRC) BEFORE publishing it by
++       advancing head. Publishing first let the consumer pop a half-written
++       sample, which is what produced the CRC errors and gaps. */
++    slots[h] = *s;
++    slots[h].crc = sample_crc(&slots[h]);
++
++    __atomic_store_n(&head, (h + 1) % RB_SIZE, __ATOMIC_RELEASE);
+     return true;
+ }
+ 
+ bool rb_pop(sample_t *out)
+ {
+-    if (rb_count() == 0) {
++    uint32_t t = __atomic_load_n(&tail, __ATOMIC_RELAXED); /* consumer owns tail */
++    uint32_t h = __atomic_load_n(&head, __ATOMIC_ACQUIRE); /* observe published samples */
++
++    if (h == t) {
+         return false;
+     }
+-    *out = slots[tail];
+-    tail = (tail + 1) % RB_SIZE;
++
++    *out = slots[t];
++    __atomic_store_n(&tail, (t + 1) % RB_SIZE, __ATOMIC_RELEASE);
+     return true;
+ }
+ 
+ uint32_t rb_dropped(void)
+ {
+-    return dropped;
++    return __atomic_load_n(&dropped, __ATOMIC_RELAXED);
+ }
+diff --git a/main/ring.h b/main/ring.h
+index 73e8c55..1938d36 100644
+--- a/main/ring.h
++++ b/main/ring.h
+@@ -3,9 +3,15 @@
+ #include <stdint.h>
+ #include "sample.h"
+ 
+-/* Single-producer, single-consumer ring buffer of samples. */
++/* Single-producer, single-consumer ring buffer of samples.
++ *
++ * Producer: esp_timer task on CPU0 (1 kHz). Consumer: monitor task on CPU1.
++ * The two sides run on different cores, so publishes use release/acquire
++ * ordering (see ring.c). RB_SIZE must exceed the number of samples that can
++ * arrive while the consumer is stalled (80 ms storage flush + scheduler delay);
++ * 256 slots holds a 250 ms burst. */
+ 
+-#define RB_SIZE 64
++#define RB_SIZE 256
+ 
+ /* Producer side (sampler). Stamps the sample's CRC. Returns false and counts a drop when the ring is full. */
+ bool rb_push(const sample_t *s);

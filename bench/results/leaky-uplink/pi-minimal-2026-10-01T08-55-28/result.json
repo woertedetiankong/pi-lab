@@ -1,0 +1,22 @@
+{
+  "scenario": "leaky-uplink",
+  "agent": "pi",
+  "docs": "minimal",
+  "model": "(default)",
+  "pass": true,
+  "detail": "ran 20 s without crashing, 50 frames/s, free heap 391916 -> 391916",
+  "minutes": 1.7,
+  "exitCode": 0,
+  "toolCalls": 16,
+  "flashes": 1,
+  "serialCaptures": 3,
+  "ledgerCalls": 0,
+  "kbCalls": 0,
+  "boardCalls": 0,
+  "tokens": {
+    "input": 20778,
+    "output": 7042
+  },
+  "costUsd": 0.0154,
+  "finalText": "## Root cause\n\n`send_with_retry()` leaked a packet buffer on every failed send.\n\n- Each attempt called `encode_frame()` → `malloc(len + 8)` (4104 bytes).\n- Per `link.h`, `link_send()` only takes ownership on `ESP_OK`; on error **the caller keeps ownership** and must free it.\n- On error the code just looped, overwrote `pkt.data` with the next allocation, and never freed the previous one. When all attempts failed it also dropped the last buffer.\n- The simulated radio returns `ESP_ERR_TIMEOUT` on roughly every 5th call, so ~10–12 leaks/second × ~4 KB ≈ 50 KB/s.\n- `CONFIG_SPIRAM` is **not** enabled in `sdkconfig`, so `malloc` comes from internal SRAM (~390 KB free). Within a few seconds the heap was exhausted, `encode_frame()` (and eventually `build_frame()`) failed, and every send failed.\n\n## Fix (`main/main.c`)\n\nEncode **once**, retry `link_send()` with the same packet (legal, since the caller retains ownership on error), and free the buffer if no attempt is accepted:\n\n```c\nstatic esp_err_t send_with_retry(const uint8_t *frame, size_t len)\n{\n    link_packet_t pkt;\n    pkt.data = encode_frame(frame, len, &pkt.len);\n    if (pkt.data == NULL) {\n        return ESP_ERR_NO_MEM;\n    }\n    for (int attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {\n        esp_err_t err = link_send(&pkt);\n        if (err == ESP_OK) {\n            return ESP_OK;          /* link now owns pkt.data */\n        }\n        ESP_LOGW(TAG, \"send failed (%s), retrying\", esp_err_to_name(err));\n        retries++;\n    }\n    free(pkt.data);                 /* never handed off */\n    return ESP_FAIL;\n}\n```\n\nNo changes to `link.c`/`link.h`, frame size, or the 50 Hz rate.\n\n## Verification on the board\n\nFlashed `/dev/cu.usbmodem101` and monitored for 40 s. `heap_free` is now constant at **391916** (was draining before), `failed=0`, and `sent` climbs continuously:\n\n```\nstats seq=1250 sent=1251 retries=312 failed=0 queue=0 heap_free=391916\nstats seq=2100 sent=2101 retries=525 failed=0 queue=0 heap_free=391916\n```\n\nSends continue indefinitely with the expected occasional `ESP_ERR_TIMEOUT` retries (radio busy), but no memory growth."
+}

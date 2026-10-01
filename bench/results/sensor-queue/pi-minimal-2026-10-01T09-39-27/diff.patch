@@ -1,0 +1,62 @@
+diff --git a/main/main.c b/main/main.c
+index 148bd27..1bb482e 100644
+--- a/main/main.c
++++ b/main/main.c
+@@ -9,7 +9,14 @@ static const char *TAG = "sensor";
+ 
+ #define FIFO_BURST        5    /* readings the sensor FIFO holds per burst */
+ #define BURST_INTERVAL_MS 500
+-#define QUEUE_LEN         4
++#define QUEUE_LEN         FIFO_BURST  /* hold a whole burst so nothing is dropped */
++#define LINE_LEN          48
++
++/* A queued reading owns its text, so the sensor can keep sampling without
++ * clobbering values that have not been reported yet. */
++typedef struct {
++    char text[LINE_LEN];
++} reading_t;
+ 
+ static QueueHandle_t readings;
+ 
+@@ -21,14 +28,13 @@ static int fake_temperature(uint32_t seq)
+ 
+ static void sensor_task(void *arg)
+ {
+-    char line[48];
+     uint32_t seq = 0;
+     for (;;) {
+         for (int i = 0; i < FIFO_BURST; i++, seq++) {
+             int t = fake_temperature(seq);
+-            snprintf(line, sizeof line, "seq=%" PRIu32 " temp=%d.%02d", seq, t / 100, t % 100);
+-            char *msg = line;
+-            if (xQueueSend(readings, &msg, pdMS_TO_TICKS(10)) != pdTRUE) {
++            reading_t reading;
++            snprintf(reading.text, sizeof reading.text, "seq=%" PRIu32 " temp=%d.%02d", seq, t / 100, t % 100);
++            if (xQueueSend(readings, &reading, pdMS_TO_TICKS(10)) != pdTRUE) {
+                 ESP_LOGW(TAG, "queue full, reading %" PRIu32 " dropped", seq);
+             }
+         }
+@@ -38,19 +44,19 @@ static void sensor_task(void *arg)
+ 
+ static void report_task(void *arg)
+ {
+-    char *msg;
++    reading_t reading;
+     for (;;) {
+-        if (xQueueReceive(readings, &msg, portMAX_DELAY) == pdTRUE) {
++        if (xQueueReceive(readings, &reading, portMAX_DELAY) == pdTRUE) {
+             /* Uploading a report takes a while. */
+             vTaskDelay(pdMS_TO_TICKS(30));
+-            printf("report %s\n", msg);
++            printf("report %s\n", reading.text);
+         }
+     }
+ }
+ 
+ void app_main(void)
+ {
+-    readings = xQueueCreate(QUEUE_LEN, sizeof(char *));
++    readings = xQueueCreate(QUEUE_LEN, sizeof(reading_t));
+     xTaskCreate(report_task, "report", 3072, NULL, 4, NULL);
+     xTaskCreate(sensor_task, "sensor", 3072, NULL, 5, NULL);
+ }

@@ -1,0 +1,83 @@
+diff --git a/main/bmi270.c b/main/bmi270.c
+index 59d5db3..283fd57 100644
+--- a/main/bmi270.c
++++ b/main/bmi270.c
+@@ -1,6 +1,7 @@
+ #include "bmi270.h"
+ #include <string.h>
+ #include "esp_log.h"
++#include "esp_rom_sys.h"
+ #include "freertos/FreeRTOS.h"
+ #include "freertos/task.h"
+ 
+@@ -11,7 +12,7 @@ static const char *TAG = "bmi270";
+ #define BMI270_ACC_DATA        0x0C
+ #define BMI270_INTERNAL_STATUS 0x21
+ #define BMI270_ACC_CONF        0x40
+-#define BMI270_ACC_RANGE       0x42
++#define BMI270_ACC_RANGE       0x41
+ #define BMI270_INIT_CTRL       0x59
+ #define BMI270_INIT_ADDR_0     0x5B
+ #define BMI270_INIT_ADDR_1     0x5C
+@@ -35,7 +36,11 @@ static void write_reg(uint8_t reg, uint8_t value)
+     if (err != ESP_OK) {
+         ESP_LOGD(TAG, "write 0x%02x: %s", reg, esp_err_to_name(err));
+     }
+-    vTaskDelay(pdMS_TO_TICKS(2));
++    /* After POR/soft reset the sensor is in advanced power save mode, where
++       register writes must be spaced by at least 450 us. Use a busy-wait so
++       the spacing does not depend on the FreeRTOS tick rate: with the 100 Hz
++       tick of this project, vTaskDelay(pdMS_TO_TICKS(2)) is zero ticks. */
++    esp_rom_delay_us(500);
+ }
+ 
+ static esp_err_t read_regs(uint8_t reg, uint8_t *out, size_t len)
+@@ -56,6 +61,7 @@ static void upload_config(void)
+         i2c_master_transmit(dev, chunk, sizeof chunk, 100);
+     }
+     write_reg(BMI270_INIT_CTRL, 0x01);
++    /* Datasheet: the init status is valid after at most 20 ms. */
+     vTaskDelay(pdMS_TO_TICKS(30));
+ }
+ 
+@@ -67,18 +73,38 @@ esp_err_t bmi270_init(i2c_master_bus_handle_t bus)
+     uint8_t id = 0;
+     ESP_ERROR_CHECK(read_regs(BMI270_CHIP_ID, &id, 1));
+     ESP_LOGI(TAG, "chip id 0x%02x", id);
++    if (id != 0x24) {
++        ESP_LOGE(TAG, "unexpected chip id");
++        return ESP_ERR_NOT_FOUND;
++    }
+ 
+     write_reg(BMI270_CMD, 0xB6); /* soft reset */
+     vTaskDelay(pdMS_TO_TICKS(20));
+ 
++    /* After POR/soft reset advanced power save mode is enabled. It must be
++       disabled before the configuration file is uploaded (datasheet 4.4),
++       otherwise the upload is not accepted and the sensor outputs zeros. */
++    write_reg(BMI270_PWR_CONF, 0x00); /* advanced power save off */
++    esp_rom_delay_us(500);
++
+     upload_config();
+ 
+-    write_reg(BMI270_PWR_CONF, 0x00);  /* advanced power save off */
++    uint8_t status = 0;
++    read_regs(BMI270_INTERNAL_STATUS, &status, 1);
++    if ((status & 0x01) == 0) {
++        ESP_LOGE(TAG, "config load failed, internal_status=0x%02x", status);
++        return ESP_ERR_INVALID_STATE;
++    }
++
+     write_reg(BMI270_PWR_CTRL, 0x04);  /* accelerometer on */
+     write_reg(BMI270_ACC_CONF, 0xA8);  /* 100 Hz, normal mode */
+     write_reg(BMI270_ACC_RANGE, ACC_RANGE_2G);
+ 
+-    ESP_LOGI(TAG, "init done");
++    /* Let the first conversion propagate through the filter so the first
++       sample read by the caller is valid instead of zero. */
++    vTaskDelay(pdMS_TO_TICKS(100));
++
++    ESP_LOGI(TAG, "init done (internal_status=0x%02x)", status);
+     return ESP_OK;
+ }
+ 

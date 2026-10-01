@@ -1,0 +1,32 @@
+diff --git a/main/main.c b/main/main.c
+index b510c67..30a9cdd 100644
+--- a/main/main.c
++++ b/main/main.c
+@@ -17,19 +17,22 @@ static uint32_t sent, retries, failed;
+ 
+ static esp_err_t send_with_retry(const uint8_t *frame, size_t len)
+ {
++    link_packet_t pkt;
++    pkt.data = encode_frame(frame, len, &pkt.len);
++    if (pkt.data == NULL) {
++        return ESP_ERR_NO_MEM;
++    }
+     for (int attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+-        link_packet_t pkt;
+-        pkt.data = encode_frame(frame, len, &pkt.len);
+-        if (pkt.data == NULL) {
+-            return ESP_ERR_NO_MEM;
+-        }
+         esp_err_t err = link_send(&pkt);
+         if (err == ESP_OK) {
++            /* The link took ownership of pkt.data. */
+             return ESP_OK;
+         }
+         ESP_LOGW(TAG, "send failed (%s), retrying", esp_err_to_name(err));
+         retries++;
+     }
++    /* link_send keeps the caller owning pkt.data on error, so free it. */
++    free(pkt.data);
+     return ESP_FAIL;
+ }
+ 

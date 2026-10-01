@@ -1,0 +1,22 @@
+{
+  "scenario": "imu-zeros",
+  "agent": "pi-lab",
+  "docs": "minimal",
+  "model": "(default)",
+  "pass": true,
+  "detail": "|a| averages 0.997 g at rest over 34 readings",
+  "minutes": 3.3,
+  "exitCode": 0,
+  "toolCalls": 43,
+  "flashes": 3,
+  "serialCaptures": 4,
+  "ledgerCalls": 13,
+  "kbCalls": 0,
+  "boardCalls": 7,
+  "tokens": {
+    "input": 55390,
+    "output": 18056
+  },
+  "costUsd": 0.0422,
+  "finalText": "Done. The board is flashed with the fixed firmware and reads steady ~1.00 g at rest.\n\n## Root cause\n\nThere were **two** independent bugs in `main/bmi270.c`; together they produced the wrong magnitude:\n\n1. **Config uploaded while advanced power save was still active.** The BMI270 comes out of reset with `PWR_CONF.adv_power_save = 1` (reset value 0x03). The datasheet (p.18/25) requires `PWR_CONF = 0x00` + ≥450 µs *before* `INIT_CTRL = 0x00` and the config burst. The code wrote `PWR_CONF = 0x00` only *after* `upload_config()`, so the 8 KB config load silently failed and the accel data registers stayed `0x0000` → `|a| = 0.000`.\n\n2. **`ACC_RANGE` written to the wrong register.** `BMI270_ACC_RANGE` was defined as `0x42`, which is actually `GYR_CONF`. The real `ACC_RANGE` is `0x41` (datasheet 5.2.42, reset `0x02` = ±8 g). So the range was never changed from ±8 g, while the code scaled raw counts as ±2 g (`16384 LSB/g`) → readings were 4× too small. Once bug 1 was fixed, this showed up as `|a| ≈ 0.25 g`; fixing it gives the correct 1.00 g.\n\n## Changes (`main/bmi270.c`)\n\n- Moved `write_reg(BMI270_PWR_CONF, 0x00)` to the start of `upload_config()`, before `INIT_CTRL`/the config burst (and removed the redundant post-upload write).\n- Corrected `#define BMI270_ACC_RANGE` from `0x42` to `0x41`.\n\n## Verification on hardware\n\nFixing only #1 turned the all-zero stream into live data at `|a| ≈ 0.249`. Adding only fix #2 then produced:\n\n```\naccel x=-0.029 y=-0.021 z=0.996 |a|=0.997\n```\n\nsteady in **0.995–0.999 g** across many samples and reproduced on a second boot. The log format is unchanged, and it still reads the real BMI270 over I2C at 0x68 (chip id 0x24). The single `|a|=0.000` line at boot is just the first sample before the accelerometer's first conversion is ready, not a fault."
+}

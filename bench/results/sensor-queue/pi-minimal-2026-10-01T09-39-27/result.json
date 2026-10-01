@@ -1,0 +1,22 @@
+{
+  "scenario": "sensor-queue",
+  "agent": "pi",
+  "docs": "minimal",
+  "model": "(default)",
+  "pass": true,
+  "detail": "90 readings reported in order with correct temperatures",
+  "minutes": 1.2,
+  "exitCode": 0,
+  "toolCalls": 12,
+  "flashes": 2,
+  "serialCaptures": 6,
+  "ledgerCalls": 0,
+  "kbCalls": 0,
+  "boardCalls": 0,
+  "tokens": {
+    "input": 4339,
+    "output": 6423
+  },
+  "costUsd": 0.0096,
+  "finalText": "Fixed and verified on the board. Output is now contiguous with each reading's own temperature (seq 80, 81, 82, …).\n\n## Root cause\n\nThe queue stored `char *` pointers, and `sensor_task` queued the address of a **single stack-local buffer** (`char *msg = line;`) that it reused every iteration:\n\n```c\nchar line[48];\nfor (...) {\n    snprintf(line, ...);        // overwrites the same memory\n    char *msg = line;\n    xQueueSend(readings, &msg, ...);   // all 5 entries point to `line`\n}\n```\n\nThe burst filled 5 queue slots immediately, but all 5 pointers referenced the same 48 bytes, which the next sample (and the next burst) overwrote. `report_task` only dereferenced the pointer later, so every line in a burst printed the *last* value written (e.g. seq 35–39 all printed as `seq=39`). The reading values were never actually lost from the queue — just aliased.\n\nI also made the queue large enough to hold a whole burst so a burst can't be squeezed out by the 10 ms send timeout (a latent drop risk).\n\n## Changes (`main/main.c`)\n\n- Introduced `reading_t { char text[LINE_LEN]; }` and queue that element **by value**, so each queued reading owns its own text and can't be clobbered.\n- `xQueueCreate(QUEUE_LEN, sizeof(reading_t))`, `QUEUE_LEN = FIFO_BURST`.\n- `sensor_task` builds a local `reading_t`, sends it by value.\n- `report_task` receives a `reading_t` and prints `reading.text`.\n\nUnchanged: report line format (`report seq=<n> temp=<t>`), `FIFO_BURST = 5`, and `BURST_INTERVAL_MS = 500`."
+}

@@ -1,0 +1,100 @@
+diff --git a/main/ring.c b/main/ring.c
+index ff43f97..393d94a 100644
+--- a/main/ring.c
++++ b/main/ring.c
+@@ -1,9 +1,21 @@
+ #include "ring.h"
++#include "freertos/FreeRTOS.h"
++#include "freertos/task.h"
++
++/* Single-producer, single-consumer ring buffer of samples.
++ *
++ * The producer and consumer run on different cores, so every access to the
++ * shared indices and slots is serialised with a spinlock. The producer fills
++ * the slot completely (payload + CRC) before publishing it via `head`, so the
++ * consumer can never observe a half-written sample.
++ */
+ 
+ static sample_t slots[RB_SIZE];
+-static volatile uint32_t head; /* next slot the producer writes */
+-static volatile uint32_t tail; /* next slot the consumer reads */
+-static volatile uint32_t dropped;
++static uint32_t head; /* next slot the producer writes */
++static uint32_t tail; /* next slot the consumer reads */
++static uint32_t dropped;
++
++static portMUX_TYPE rb_mux = portMUX_INITIALIZER_UNLOCKED;
+ 
+ static uint32_t rb_count(void)
+ {
+@@ -12,29 +24,41 @@ static uint32_t rb_count(void)
+ 
+ bool rb_push(const sample_t *s)
+ {
+-    if (rb_count() > RB_SIZE - 1) {
++    /* Stamp the CRC before publishing; never let the consumer see a stale CRC. */
++    sample_t tmp = *s;
++    tmp.crc = sample_crc(&tmp);
++
++    bool ok = false;
++    portENTER_CRITICAL(&rb_mux);
++    if (rb_count() >= RB_SIZE - 1) {
++        /* One slot is kept empty so full and empty are distinguishable. */
+         dropped++;
+-        return false;
++    } else {
++        slots[head] = tmp;
++        head = (head + 1) % RB_SIZE;
++        ok = true;
+     }
+-    /* Claim the slot first so the consumer can start on it right away, then fill it in. */
+-    uint32_t slot = head;
+-    head = (slot + 1) % RB_SIZE;
+-    slots[slot] = *s;
+-    slots[slot].crc = sample_crc(&slots[slot]);
+-    return true;
++    portEXIT_CRITICAL(&rb_mux);
++    return ok;
+ }
+ 
+ bool rb_pop(sample_t *out)
+ {
+-    if (rb_count() == 0) {
+-        return false;
++    bool ok = false;
++    portENTER_CRITICAL(&rb_mux);
++    if (head != tail) {
++        *out = slots[tail];
++        tail = (tail + 1) % RB_SIZE;
++        ok = true;
+     }
+-    *out = slots[tail];
+-    tail = (tail + 1) % RB_SIZE;
+-    return true;
++    portEXIT_CRITICAL(&rb_mux);
++    return ok;
+ }
+ 
+ uint32_t rb_dropped(void)
+ {
+-    return dropped;
++    portENTER_CRITICAL(&rb_mux);
++    uint32_t d = dropped;
++    portEXIT_CRITICAL(&rb_mux);
++    return d;
+ }
+diff --git a/main/ring.h b/main/ring.h
+index 73e8c55..ef905f9 100644
+--- a/main/ring.h
++++ b/main/ring.h
+@@ -5,7 +5,9 @@
+ 
+ /* Single-producer, single-consumer ring buffer of samples. */
+ 
+-#define RB_SIZE 64
++/* Must hold every sample produced while the consumer is stalled in the 80 ms
++ * storage flush (80 samples at 1 kHz) plus normal scheduling backlog. */
++#define RB_SIZE 256
+ 
+ /* Producer side (sampler). Stamps the sample's CRC. Returns false and counts a drop when the ring is full. */
+ bool rb_push(const sample_t *s);

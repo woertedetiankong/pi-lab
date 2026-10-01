@@ -1,0 +1,23 @@
+{
+  "scenario": "racy-ring",
+  "agent": "pi",
+  "docs": "minimal",
+  "model": "(default)",
+  "pass": true,
+  "detail": "12053 samples intact and in order (1005/s), no drops",
+  "firstJudge": "firmware crashed or rebooted",
+  "minutes": 2.9,
+  "exitCode": 0,
+  "toolCalls": 23,
+  "flashes": 2,
+  "serialCaptures": 8,
+  "ledgerCalls": 0,
+  "kbCalls": 0,
+  "boardCalls": 0,
+  "tokens": {
+    "input": 9797,
+    "output": 11243
+  },
+  "costUsd": 0.0179,
+  "finalText": "## Root cause\n\nThe failures came from three defects in the producer side of the ring buffer (`main/ring.c` / `main/ring.h`):\n\n1. **Publish-before-write race.** `rb_push()` advanced `head` *before* writing the slot, then copied the sample and recomputed the CRC in place on the shared slot. The consumer could therefore `rb_pop()` a slot whose data was still being written (or still held the previous sample). That produces exactly the observed `crc_err` (consumer reading a CRC that doesn't match the racing payload) and `gaps` (reading stale/non-monotonic `seq`). There was no memory barrier either, so the head update could become visible before the slot stores.\n\n2. **Broken full-detection.** `rb_count()` returns `(head - tail + RB_SIZE) % RB_SIZE`, i.e. always in `[0, RB_SIZE-1]`. The test `rb_count() > RB_SIZE - 1` is therefore *never true*, so the producer never detected a full ring and silently overwrote unread samples instead of reporting a drop — also corrupting the head/tail accounting.\n\n3. **Ring too small for the blocking write.** The 80 ms simulated storage write blocks the monitor for 80 ms, during which the 1 kHz sampler produces 80 samples. With `RB_SIZE 64`, a corrected full check would start dropping. The ring must be able to buffer the whole flush.\n\n## What I changed\n\n- **`main/ring.c` — `rb_push()` rewritten:**\n  - Full check is now `next == tail` (correct).\n  - The complete sample, including its CRC, is built in a private local (`tmp`), copied into the slot, and only then is `head` published.\n  - Added `__sync_synchronize()` (release barrier) between the slot store and the head store so the consumer can never see a partially written or stale slot.\n- **`main/ring.h`:** `RB_SIZE` 64 → 256, enough to absorb the 80-sample flush with margin.\n\nI did **not** touch `main/monitor.c` or `main/sample.h`; the 1 kHz sample rate and the 80 ms storage write are unchanged.\n\n## Verification on the board\n\nFlashed and ran a ~75 s soak. `ok` advances at 1000/s and all error counters stay at zero:\n\n```\nstats ok=75047 crc_err=0 gaps=0 dropped=0\n...\nSUMMARY lines=23 bad=0 last={'ok': '75047', 'crc_err': '0', 'gaps': '0', 'dropped': '0'}\n```\n\n(For comparison, the original firmware showed `crc_err` and `gaps` climbing by ~200/s.)"
+}

@@ -1,0 +1,22 @@
+{
+  "scenario": "imu-zeros",
+  "agent": "pi-lab",
+  "docs": "minimal",
+  "model": "(default)",
+  "pass": true,
+  "detail": "|a| averages 0.997 g at rest over 34 readings",
+  "minutes": 8.9,
+  "exitCode": 0,
+  "toolCalls": 98,
+  "flashes": 11,
+  "serialCaptures": 13,
+  "ledgerCalls": 18,
+  "kbCalls": 0,
+  "boardCalls": 24,
+  "tokens": {
+    "input": 132841,
+    "output": 43207
+  },
+  "costUsd": 0.1108,
+  "finalText": "Done. The board now reads correctly: every line shows `|a| ≈ 0.99–1.00 g`, log format unchanged, still reading the real BMI270.\n\n## Root cause\n\nTwo bring-up bugs in `main/bmi270.c` (plus one startup transient):\n\n1. **Feature config never loaded → data registers stuck at 0x0000.** The 8 KB BMI270 config file was uploaded while the sensor was still in its default advanced-power-save mode (`PWR_CONF=0x03`). Per the datasheet init sequence (p18/p25), `PWR_CONF.adv_power_save=0` must be set and ≥450 µs waited **before** `INIT_CTRL`/config upload. The code set `PWR_CONF=0x00` only *after* the upload, so the load was ineffective: I read `INTERNAL_STATUS.message = 0x02 (init_err)` and data `00 00 00 00 00 00`. The accelerometer was never running → `|a| = 0.000`.\n\n2. **Wrong ACC_RANGE register → 4× low.** `BMI270_ACC_RANGE` was defined as `0x42`, but 0x42 is `GYR_CONF`; `ACC_RANGE` is `0x41` (datasheet p102, reset 0x02 = ±8g). So the range write went to the gyro register and the accel stayed at its ±8g default (4096 LSB/g) while the driver divided by 16384 LSB/g (±2g). With init fixed, readings were 4× small (`|a| = 0.248 g`).\n\n3. **Startup transient.** The first sample was read before the first data-ready (~60 ms after enabling), printing one `0.000` line.\n\n## What I changed (`main/bmi270.c`, 14 insertions / 2 deletions)\n\n- `#define BMI270_ACC_RANGE 0x42` → `0x41`.\n- Moved `PWR_CONF=0x00` (advanced power save off) and a ≥450 µs wait to **before** `upload_config()`.\n- Added a wait for `STATUS(0x03).drdy_acc` (bit 7) before `bmi270_init` returns, so the first logged sample is valid.\n- Kept the `accel x=%.3f y=%.3f z=%.3f |a|=%.3f` format and the real-sensor reads.\n\nVerified by reverting the tree to the original commit, rebuilding/flashing (reproduced all-zeros), then restoring the fix and confirming two independent boots at `|a| = 0.989–0.998 g`.\n\nLedger: H1–H4 confirmed; F1 (baseline zeros) and F4 (final ~1 g) reproduced."
+}

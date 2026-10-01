@@ -1,0 +1,22 @@
+{
+  "scenario": "frame-pacing",
+  "agent": "pi-lab",
+  "docs": "minimal",
+  "model": "(default)",
+  "pass": true,
+  "detail": "fps readings: [51, 51, 51, 51, 51, 51, 51, 51, 51, 51, 51, 51]",
+  "minutes": 6.4,
+  "exitCode": 0,
+  "toolCalls": 44,
+  "flashes": 5,
+  "serialCaptures": 7,
+  "ledgerCalls": 14,
+  "kbCalls": 0,
+  "boardCalls": 12,
+  "tokens": {
+    "input": 20614,
+    "output": 24015
+  },
+  "costUsd": 0.0395,
+  "finalText": "## Root cause\n\nThe DSP task paced itself by measuring how long a frame took, subtracting that from the 20 ms period, and sleeping the remainder through `pdMS_TO_TICKS()`:\n\n```c\nint elapsed_ms = (esp_timer_get_time() - start) / 1000;   // 12\nvTaskDelay(pdMS_TO_TICKS(FRAME_PERIOD_MS - elapsed_ms));  // pdMS_TO_TICKS(8)\n```\n\n`CONFIG_FREERTOS_HZ=100` (10 ms tick), so `pdMS_TO_TICKS(8)` = `8*100/1000` = **0**. `vTaskDelay(0)` only yields — it never blocks. The loop ran back‑to‑back at ~1 frame/12 ms, and because the task never slept, `IDLE0` on CPU 0 never got to run, so the task watchdog fired every 5 s.\n\nObserved on the unmodified firmware (two clean builds):\n- `dsp: fps=84` every second (~83 = 1/12 ms), not 50\n- `task_wdt: ... - IDLE0 (CPU 0) ... CPU 0: dsp` every ~5 s\n\n## Fix\n\n`main/main.c` — replaced the computed‑remainder sleep with an absolute frame schedule:\n\n```c\nTickType_t last_wake = xTaskGetTickCount();\nconst TickType_t frame_period_ticks = pdMS_TO_TICKS(FRAME_PERIOD_MS); // exactly 2 ticks @100Hz\n...\nprocess_frame();\nframes++;\nvTaskDelayUntil(&last_wake, frame_period_ticks);\n```\n\nFrames are now scheduled on a fixed 20 ms (2‑tick) grid; `process_frame()` is untouched, and the watchdog is untouched (`CONFIG_ESP_TASK_WDT_EN=y`, 5 s timeout, IDLE0/IDLE1 checks intact).\n\n## Verified on the board\n\nTwo independent clean builds (`rm -rf build` each time), each flashed and observed for 32 s and 40 s: steady `dsp: fps=51` every second and **no `task_wdt` messages**.\n\n`fps=51` is the counter, not the rate: the log window is measured to the next frame boundary, so it is 1.0199 s, and 51 frames / 1.0199 s = **50.0 fps** (direct instrumentation measured 19.9975 ms/frame). The frame rate is a steady 50 fps and the watchdog is quiet.\n\n**Changed:** `main/main.c` only — frame pacing moved from `vTaskDelay(pdMS_TO_TICKS(period − elapsed))` to an absolute `vTaskDelayUntil(..., pdMS_TO_TICKS(FRAME_PERIOD_MS))` schedule."
+}

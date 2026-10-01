@@ -1,0 +1,22 @@
+{
+  "scenario": "boot-counter",
+  "agent": "pi",
+  "docs": "minimal",
+  "model": "(default)",
+  "pass": true,
+  "detail": "boot counts across three resets: [2, 3, 4]",
+  "minutes": 8.1,
+  "exitCode": 0,
+  "toolCalls": 46,
+  "flashes": 2,
+  "serialCaptures": 22,
+  "ledgerCalls": 0,
+  "kbCalls": 0,
+  "boardCalls": 0,
+  "tokens": {
+    "input": 17851,
+    "output": 23860
+  },
+  "costUsd": 0.0393,
+  "finalText": "Done. Root cause found, fixed, flashed, and verified on the board.\n\n## Root cause\n\nIn `main/main.c`, `storage_init()` had:\n\n```c\nif (err == ESP_ERR_NVS_NO_FREE_PAGES || ESP_ERR_NVS_NEW_VERSION_FOUND) {\n```\n\nBecause `==` binds tighter than `||`, this parses as:\n\n```c\nif ((err == ESP_ERR_NVS_NO_FREE_PAGES) || (ESP_ERR_NVS_NEW_VERSION_FOUND != 0)) {\n```\n\n`ESP_ERR_NVS_NEW_VERSION_FOUND` is a **nonzero constant**, so the right operand is always true and the whole condition is always true. That means **every boot** ran `nvs_flash_erase()`, wiping the NVS partition that holds `boot_count` before it was read. `load_boot_count()` then always hit `ESP_ERR_NVS_NOT_FOUND` and returned 0, so the printed value was always `0 + 1 = 1`.\n\n## Fix\n\n`main/main.c` — compare the second code against `err` too, so erasing only happens for the two genuine recovery cases:\n\n```c\nif (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {\n```\n\nThis is the only change (1 line). The `printf(\"boot_count=%\" PRIu32 \" (reset reason %d)\\n\", ...)` format string is untouched.\n\n## Verification on the board\n\nFlashed the fixed firmware and reset the device repeatedly via esptool hard-reset, capturing the boot log each time:\n\n- **Before the fix:** `1, 1, 1, 1` (stuck)\n- **After the fix:** `5, 6, 7, 8, 9` (increments and persists across resets)\n\nThe build/flash succeeded and NVS now retains the count. (During testing I had to recover a temporarily wedged USB-Serial-JTAG endpoint with a libusb device reset; the board and workflow are healthy again.)"
+}

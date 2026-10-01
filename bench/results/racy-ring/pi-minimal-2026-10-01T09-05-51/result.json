@@ -1,0 +1,22 @@
+{
+  "scenario": "racy-ring",
+  "agent": "pi",
+  "docs": "minimal",
+  "model": "(default)",
+  "pass": true,
+  "detail": "12033 samples intact and in order (1003/s), no drops",
+  "minutes": 2.6,
+  "exitCode": 0,
+  "toolCalls": 26,
+  "flashes": 2,
+  "serialCaptures": 6,
+  "ledgerCalls": 0,
+  "kbCalls": 0,
+  "boardCalls": 0,
+  "tokens": {
+    "input": 11927,
+    "output": 11780
+  },
+  "costUsd": 0.019,
+  "finalText": "## Root cause\n\nTwo independent defects, both in the ring buffer (`main/ring.c` / `main/ring.h`), which I was allowed to change:\n\n1. **Publish-before-fill data race in `rb_push`.** The producer advanced `head` (claiming the slot) *before* copying the sample and computing its CRC:\n   ```c\n   uint32_t slot = head;\n   head = (slot + 1) % RB_SIZE;   // slot now visible to consumer\n   slots[slot] = *s;              // ...but still being written\n   slots[slot].crc = sample_crc(...);\n   ```\n   The sampler callback runs in the esp_timer task on **core 0**, while `monitor_task` is pinned to **core 1** (`app_main.c`). The consumer could pop a slot that was still being filled, seeing torn/stale bytes → `crc_err`, and an old `seq` → `gaps`. `volatile` does not create the needed ordering.\n\n2. **Ring too small and a broken full check.** The monitor blocks for 80 ms on the storage write, during which 80 samples arrive at 1 kHz, but `RB_SIZE=64` holds only 63. Worse, the check `rb_count() > RB_SIZE - 1` can never be true under the modulo arithmetic, so instead of counting a drop the producer wrapped `head` onto `tail`, silently discarding samples (this is why `dropped` stayed 0 but `ok` was only ~936/s).\n\n## Fix (on the board)\n\n- `rb_push` now **fills the slot and its CRC first, then publishes it** with a *release* store to `head`; `rb_pop` reads `head` with an *acquire* load before copying. `tail` uses matching release/acquire, and `dropped` is accessed atomically. This guarantees the consumer never sees a half-written or stale slot and orders accesses across the two cores.\n- Corrected the full test to `>= RB_SIZE - 1` (one slot reserved to distinguish full from empty).\n- Raised `RB_SIZE` to **256** so the ring can absorb the 80 ms flush (80 samples) with margin, without changing the 1 kHz rate or the 80 ms write.\n\nNo changes to `main/monitor.c` or `main/sample.h`; only `main/ring.c` and `main/ring.h` changed.\n\n## Verification (flashed to `/dev/cu.usbmodem101`)\n\nBefore:\n```\nstats ok=3101 crc_err=710 gaps=713 dropped=0\nstats ok=3872 crc_err=885 gaps=889 dropped=0\n...\n```\n\nAfter (30 s soak, 28 reports):\n```\nfinal: stats ok=53257 crc_err=0 gaps=0 dropped=0\nreports with nonzero errors: 0\n```\nThroughput held at ~1000 samples/s, and `crc_err`, `gaps`, and `dropped` all remained 0."
+}

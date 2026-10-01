@@ -1,0 +1,22 @@
+{
+  "scenario": "boot-counter",
+  "agent": "pi",
+  "docs": "minimal",
+  "model": "(default)",
+  "pass": true,
+  "detail": "boot counts across three resets: [2, 3, 4]",
+  "minutes": 7,
+  "exitCode": 0,
+  "toolCalls": 71,
+  "flashes": 1,
+  "serialCaptures": 13,
+  "ledgerCalls": 0,
+  "kbCalls": 0,
+  "boardCalls": 0,
+  "tokens": {
+    "input": 37476,
+    "output": 42239
+  },
+  "costUsd": 0.0745,
+  "finalText": "Fixed and verified on the board.\n\n## Root cause\n\nA missing comparison in `storage_init()` (main/main.c:19):\n\n```c\nif (err == ESP_ERR_NVS_NO_FREE_PAGES || ESP_ERR_NVS_NEW_VERSION_FOUND) {\n```\n\nIn C, `==` binds tighter than `||`, so this parses as:\n\n```c\nif ((err == ESP_ERR_NVS_NO_FREE_PAGES) || (ESP_ERR_NVS_NEW_VERSION_FOUND)) {\n```\n\n`ESP_ERR_NVS_NEW_VERSION_FOUND` is a non‑zero integer constant, so the second operand is always true — the `if` body runs on **every** boot. As a result `nvs_flash_erase()` wipes the NVS partition during `storage_init()`, before `load_boot_count()` runs. Every boot therefore sees an empty partition, logs `no boot count stored yet`, and writes `boot_count=1` again. The on‑flash NVS entry was always valid; it was erased each boot.\n\n## Fix\n\nAdded the missing `err ==` on the second condition:\n\n```c\nif (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {\n```\n\nNow `nvs_flash_erase()` only runs when `nvs_flash_init()` actually reports `ESP_ERR_NVS_NO_FREE_PAGES` or `ESP_ERR_NVS_NEW_VERSION_FOUND`.\n\n## Verification\n\nRebuilt and reflashed to `/dev/cu.usbmodem101`, then reset the board four times:\n\n```\nboot_count=3 ... saved boot_count=3\nboot_count=4 ... saved boot_count=4\nboot_count=5 ... saved boot_count=5\nboot_count=6 ... saved boot_count=6\n```\n\nThe counter now increments across resets and persists in flash. The log format is unchanged."
+}

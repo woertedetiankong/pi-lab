@@ -1,0 +1,22 @@
+{
+  "scenario": "leaky-uplink",
+  "agent": "pi",
+  "docs": "minimal",
+  "model": "(default)",
+  "pass": true,
+  "detail": "ran 20 s without crashing, 50 frames/s, free heap 391916 -> 391916",
+  "minutes": 1.2,
+  "exitCode": 0,
+  "toolCalls": 15,
+  "flashes": 1,
+  "serialCaptures": 4,
+  "ledgerCalls": 0,
+  "kbCalls": 0,
+  "boardCalls": 0,
+  "tokens": {
+    "input": 6133,
+    "output": 3430
+  },
+  "costUsd": 0.0064,
+  "finalText": "The board is now stable: `heap_free` is flat at 391916 bytes, `sent` climbs monotonically, `failed=0`, `queue=0`. The `send failed ... retrying` warnings are the expected normal behavior (the simulated radio is busy every 5th call, and the retry then succeeds).\n\n## Root cause\n\n`send_with_retry()` in `main/main.c` leaked memory on every failed send. The contract in `link.h` is clear: `link_send()` only takes ownership of `pkt.data` on `ESP_OK`; on any error the caller keeps ownership. But the loop allocated a fresh encoded buffer each attempt and, on failure, simply looped around without freeing the previous one:\n\n```c\npkt.data = encode_frame(frame, len, &pkt.len);\nesp_err_t err = link_send(&pkt);\nif (err == ESP_OK) return ESP_OK;\n/* pkt.data leaked here */\n```\n\nThe simulated radio returns `ESP_ERR_TIMEOUT` on every 5th call, so each frame leaked roughly 1–3 buffers of `len + 8` = 4104 bytes. At 50 Hz that is tens of KB per second. Once the heap was exhausted, `encode_frame()` returned `NULL`, every send failed (`ESP_ERR_NO_MEM`), and shortly after `build_frame()`'s `malloc` failed, hitting `abort()` — \"every send fails and nothing gets through.\"\n\n## Fix\n\nIn `main/main.c`, free the encoded buffer before retrying when `link_send()` reports an error (the last failed attempt is covered too, since each iteration frees its own buffer):\n\n```c\nesp_err_t err = link_send(&pkt);\nif (err == ESP_OK) {\n    return ESP_OK;\n}\n/* link_send() only takes ownership of pkt.data on success; free it here\n * so failed attempts don't leak the encoded buffer. */\nfree(pkt.data);\nESP_LOGW(TAG, \"send failed (%s), retrying\", esp_err_to_name(err));\nretries++;\n```\n\nNo changes to `link.c`/`link.h`, the frame size, or the 50 Hz rate. Built and flashed to `/dev/cu.usbmodem101`; verified over 30+ seconds of runtime with a steady heap and continuous successful sends."
+}

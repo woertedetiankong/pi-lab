@@ -1,0 +1,22 @@
+{
+  "scenario": "sensor-queue",
+  "agent": "pi",
+  "docs": "minimal",
+  "model": "(default)",
+  "pass": true,
+  "detail": "90 readings reported in order with correct temperatures",
+  "minutes": 1.9,
+  "exitCode": 0,
+  "toolCalls": 16,
+  "flashes": 2,
+  "serialCaptures": 8,
+  "ledgerCalls": 0,
+  "kbCalls": 0,
+  "boardCalls": 0,
+  "tokens": {
+    "input": 9800,
+    "output": 8959
+  },
+  "costUsd": 0.0146,
+  "finalText": "Verified on the board: a clean boot now prints `seq=0..64`, consecutive, unique, each with its own correct temperature.\n\n## Root cause\n\nThe queue stored `char *` pointers, and the sensor task passed the address of a **single reused stack buffer** (`char line[48]`):\n\n```c\nchar line[48];                 // one buffer for the whole task\n...\nsnprintf(line, ...);           // overwritten every iteration\nchar *msg = line;              // same address every time\nxQueueSend(readings, &msg, ...);\n```\n\nSo every queued entry pointed at the same memory. By the time `report_task` woke up and printed, the buffer held only the *last* reading of the burst, producing five identical `report seq=N ...` lines (N = last seq of the burst — hence the 4, 9, 14, … groups), and intermediate readings were never observable.\n\n## Fix (`main/main.c`)\n\nStore the reading *by value* in the queue instead of by pointer, so each queued item owns its own text:\n\n- Added `typedef struct { char text[48]; } reading_t;`\n- Sensor task fills a `reading_t` and sends `&reading` (copied into the queue).\n- Report task receives into a local `reading_t` and prints `reading.text`.\n- Queue item size changed from `sizeof(char *)` to `sizeof(reading_t)`.\n\nUnchanged: the `report seq=<n> temp=<t>` line format, `FIFO_BURST` (5), `BURST_INTERVAL_MS` (500), and `QUEUE_LEN`. Firmware was rebuilt and flashed to `/dev/cu.usbmodem101`, then reset to confirm ordering from `seq=0` with no duplicates, drops, or temperature mismatches."
+}

@@ -1,0 +1,22 @@
+{
+  "scenario": "racy-ring",
+  "agent": "pi-lab",
+  "docs": "minimal",
+  "model": "(default)",
+  "pass": true,
+  "detail": "12063 samples intact and in order (1005/s), no drops",
+  "minutes": 3.5,
+  "exitCode": 0,
+  "toolCalls": 33,
+  "flashes": 4,
+  "serialCaptures": 9,
+  "ledgerCalls": 13,
+  "kbCalls": 0,
+  "boardCalls": 12,
+  "tokens": {
+    "input": 37140,
+    "output": 14503
+  },
+  "costUsd": 0.0314,
+  "finalText": "## Root cause\n\nThe producer/consumer ring buffer in `main/ring.c` was not synchronized. Two defects combined, and a third made the required zero-drop target unachievable at `RB_SIZE=64`:\n\n1. **Publish-before-write race (crc_err, gaps):** `rb_push()` advanced `head` *first* and only then copied the 64-byte sample and stamped its CRC — and the CRC is computed bit-by-bit over 62 bytes, so the window is long. The consumer runs on core 1 while the esp_timer callback runs on core 0; it repeatedly popped a slot that was still being written (or held a stale CRC). Every CRC failure also skipped the `expect` update, producing a corresponding gap. Baseline on the board: `crc_err=197 gaps=197` in the first second, `crc_err=707 gaps=710` by second 4.\n\n2. **Full-check off-by-one (dropped silently 0):** `if (rb_count() > RB_SIZE - 1)` can never be true (max count is `RB_SIZE-1`), so overflow was never counted. When the ring filled, the producer just overwrote unread slots — data loss hidden behind `dropped=0`.\n\n3. **Ring too small for the flush:** the monitor stalls 80 ms (`FLUSH_US`) once per second while the 1 kHz sampler keeps producing ~80 samples; 64 slots cannot hold them. After fixing (1)/(2) with `RB_SIZE=64`, the board reported `dropped=17` in the first second and ~23/s steady — a correct ring simply had nowhere to put them.\n\n## What I changed (only `main/ring.c` and `main/ring.h`)\n\n- **Write-then-publish:** `rb_push()` now stamps the CRC on a private copy and fills the slot completely before advancing `head`, so the consumer can never observe a half-written sample.\n- **Serialized access:** `head`, `tail`, slots and `dropped` are accessed under a `portMUX_TYPE` spinlock (SPSC across cores, esp_timer callback is task context). Consumer copies the slot before advancing `tail`.\n- **Correct full check:** `rb_count() >= RB_SIZE - 1`, keeping one slot empty to distinguish full from empty, so overflow is genuinely counted.\n- **`RB_SIZE` 64 → 256** so the ring holds a whole 80 ms flush burst plus scheduling backlog.\n\n`main/monitor.c`, `main/sample.h`, the 1 kHz rate, and the 80 ms storage write are untouched.\n\n## Verification\n\nAfter a clean rebuild (`rm -rf build`, reflash) the board runs cleanly and reproducibly:\n\n```\nstats ok=1003 ... ok=10033   crc_err=0 gaps=0 dropped=0\n```\n\n~1000 samples/s, all counters zero, sustained over a 25 s soak and again after the clean rebuild."
+}

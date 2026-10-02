@@ -1,91 +1,86 @@
 # pi-lab
 
-给 [pi](https://pi.dev/) 用的嵌入式调试插件：让 agent 可靠地烧录和读取开发板，不改动项目以外的工具链，并在长时间调试中记住试过什么。
+English · [中文](README.zh.md)
 
-> 早期版本（v0.3.3）。目前在 ESP32-S3（M5StickS3）上实测；板级工具支持 ESP-IDF 和 PlatformIO 项目，USB 自动恢复仅支持 macOS。
+Embedded debugging for the [pi](https://pi.dev/) coding agent: it flashes and reads your board reliably, shares a live serial panel with you, stays out of your toolchain, and keeps track of what it tried over a long debugging session.
 
-![板子面板：M5StickS3 的 BMI270 加速度计实时曲线和串口日志](docs/panel.png)
+> Early release (v0.3.3). Tested on an ESP32-S3 (M5StickS3) on macOS. The board tools work with ESP-IDF and PlatformIO projects; automatic USB recovery is macOS only.
 
-## 功能
+![The board panel: live plot of an M5StickS3's BMI270 accelerometer and its serial log](docs/panel.png)
 
-1. **板级工具**：agent 不用自己摸索串口和复位。
-   - `board_flash`：识别 ESP-IDF / PlatformIO 项目，自动加载工具链环境，编译并烧录；编译失败只返回编译错误；烧录后等 USB 稳定再复位，让新固件运行。USB 无响应时自动恢复并重试。
-   - `board_serial`：复位板子，从第一行启动日志开始抓串口，抓够秒数或匹配到 `until` 就结束（代替永不退出的 `idf.py monitor`）。长日志自动折叠，完整日志存到文件。打开串口时先拉低 RTS 再拉低 DTR，避免 ESP32 原生 USB 串口在打开时被误复位。
-   - `board_recover`：板子 USB 无响应时，用软件让 USB 重新枚举（相当于拔插一次，macOS）。
-2. **板子面板（网页）**：`/lab web` 打开，和 pi-kb、pi-sessions 的网页在同一个地址下（`/lab/`）。
-   - 实时串口日志：时间戳、按 ESP-IDF 日志级别着色、过滤；复位、烧录在日志里显示为分隔线。
-   - **曲线**：日志里的 `名称=数值`（`fps=50`、`temp: 21.5`、`|a|=0.997`）自动画成曲线；启动阶段的地址、时钟等参数不画；只出现一两次的值默认隐藏。点曲线上的点跳到对应的日志行。
-   - **问 pi**：在日志上按下鼠标，日志停止滚动；按住拖过几行就选中它们（单击选一行，Shift 点击选一段，⌘/Ctrl 点击加选，⌘C 复制）。写个问题，点「问 pi」，这几行和时间一起发给终端里的 agent；agent 正忙时排在当前任务之后。「↓ 回到最新」恢复自动滚动。
-   - **串口和波特率**：顶部选择看哪个串口（默认「自动」：最近插上的那块板子）和波特率（9600～2000000），按项目保存在 `.pi/lab.json`；指定的串口拔掉后自动回到「自动」。收到的内容大部分是乱码时，提示波特率可能不对，点一下换成常用的波特率。ESP32-S3/C3 的原生 USB 不受波特率影响。
-   - 复位板子、恢复 USB、**释放串口**（让你自己的工具或 IDE 用串口，再点一下取回）。
-   - pi-lab 通过一个串口中枢独占串口，网页、`board_serial`、`board_flash` 共用：烧录时自动让出、烧完取回；agent 用 bash 跑烧录、`idf.py monitor`、esptool 或自己的串口脚本时，也会先让出串口，不会遇到「端口被占用」。没有网页在看、也没有工具在读时，串口会释放。
-3. **崩溃自动解码**：串口里出现 ESP-IDF 的 `Backtrace:`、`abort() was called at PC …` 或寄存器转储的 PC 时，用项目 `build/` 里的 ELF 和 addr2line 翻译成函数和源码行（`↳ store_sample at main/main.c:14`），插在日志里；网页上高亮，`board_serial` 返回给 agent 的结果里也有。
+## Quick start
 
-4. **防护**：工具调用执行前检查。
-   - 写入 SDK、工具链或系统目录（`~/.espressif`、`$IDF_PATH`、`~/.platformio`、`/opt/homebrew` 等），往共享 Python 环境 `pip install`，`sudo`、`brew install`：需要你确认；没有界面时（`pi -p`）直接拦下，并告诉 agent 怎么在项目内解决（把组件复制进项目、用项目内的虚拟环境）。
-   - 烧 eFuse、安全启动/加密密钥、读保护等会永久改变芯片的操作，单独标为硬件风险。
-   - `PI_LAB_GUARD=off` 关闭。
-5. **调试账本**：agent 用 `lab_ledger` 记录目标板、硬件上观察到的现象和假设，每轮写进系统提示，上下文压缩后不丢失。
-   - 新记录的现象先算「单次观察」，单独列出并提示不要以此为基础推理；从干净代码只改一处复现之后，用 `verify_fact` 升级为事实。
-   - 假设标为已排除 / 已确认时必须给证据；和已排除的假设相似的新假设会被拦下（中英文都能识别）。
-   - 连续 30 次工具调用没有复现的事实、也没有确认或排除假设时，提醒一次「退一步」：回到最初的症状，从头读一遍相关代码。
-   - 账本按会话分支保存。
-6. **固件同步检测**：烧录成功后记下固件源码的指纹（git HEAD、源码改动、未跟踪文件）。之后固件相关文件一改，状态栏显示 `⚠ board runs stale firmware`，agent 也会看到。agent 改了固件却没烧录就想结束时，提醒一次。需要项目是 git 仓库。
-7. **旧日志折叠**：编译、烧录、串口日志在发给模型的上下文里只保留最新两份完整内容，更早的只留开头、结尾和像错误的行。会话文件里仍然保存完整日志。
-
-8. **板卡包**：一块板子的知识打包在 `boards/<板子>/` 里：
-   - `board.json`：芯片、I2C 总线和上面的器件、引脚、按键行为、已知的坑、用到的芯片手册。每一项都标明来源：在板子上实测的，或来自厂商文档、驱动库。
-   - `notes/`：在板子上验证过的经验笔记（pi-kb 笔记格式）。
-   - 用 `/lab board <id>` 给项目选定板子（存在项目的 `.pi/lab.json`）；连着匹配的 USB 设备、又还没选板子时，pi-lab 会提示。选定后，引脚、总线和已知的坑写进提示词；芯片手册下载一次到 `~/.pi/agent/pi-lab/boards/<id>/docs/`。
-   - 同时装了 [pi-kb](https://github.com/woertedetiankong/pi-kb) 时，手册和笔记会导入到以板子命名的资料集，agent 检索时带页码引用；没装时，agent 直接读这些文件。
-   - 目前有：`m5sticks3`（M5StickS3：内部 I2C、BMI270、M5PM1，以及串口打开即复位、USB 卡死、侧键下载模式、BMI270 初始化四篇笔记）。
-
-## 已知问题
-
-- ESP32-S3 原生 USB 偶尔会在应用启动、接管 USB 时卡住（日志停在 bootloader 的 `Disabling RNG early entropy source...`）。pi-lab 复位后检测到这种情况会自动重新枚举 USB 再复位一次；其他时候用面板上的「恢复 USB」或 `board_recover`。
-- 一次测试中，pi 在调用 `board_flash` 前后空等了 10 分钟，没有子进程在运行，原因还没查明（可能是模型请求卡住）。遇到时按 Esc 中断后重试。
-
-## 实测
-
-`bench/` 是在真实 M5StickS3 上的调试测试：6 个埋了 bug 的 ESP-IDF 项目，agent 修完后由脚本烧录并看板子判定。详见 [bench/README.md](bench/README.md)。目前的结论（deepseek-flash）：
-
-- 6 个场景普通 pi 和 pi-lab 都能修好，**pi-lab 没有让 agent 更快**：只有账本的旧版本在 6 个场景里都更慢，还有一次把两条错误观察当成事实，钻了 30 分钟牛角尖（因此有了「单次观察」规则）；新版在只写板子型号的项目里 2 个场景更快、4 个更慢。
-- 项目里只写板子型号时，普通 pi 在 12 次里有 1 次花了约 10 分钟摸索串口复位，有 3 次试图改动项目以外的环境（2 次试探 `sudo`，1 次往共享 Python 装包）；pi-lab 12 次里是 0 次。
-
-## 命令
-
-| 命令 | 作用 |
-| --- | --- |
-| `/lab web` | 在浏览器打开板子面板（`/lab web url` 只显示地址，`/lab web stop` 关闭网页服务） |
-| `/lab serial [串口 \| auto \| 波特率]` | 查看或设置这个项目的串口和波特率，例如 `/lab serial 9600`、`/lab serial auto` |
-| `/lab` | 查看账本和固件同步状态 |
-| `/lab target <描述>` | 设置目标板，例如 `/lab target STM32F407 on /dev/ttyUSB0` |
-| `/lab flashed` | 在 pi 之外烧录后（IDE、图形烧录工具），手动标记为已同步 |
-| `/lab clear` | 清空当前分支的账本 |
-| `/lab board [id \| none]` | 查看或选择这个项目用的板卡包 |
-
-固件同步检测要求项目是 git 仓库；不是 git 仓库时，这部分功能不启用。
-
-## 安装
-
-需要 Node.js 22.19+ 和 pi 0.87 或更新版本。
+Requires Node.js 22.19+ and pi 0.87 or newer.
 
 ```bash
-# 从 GitHub 安装（写入 ~/.pi/agent/settings.json，所有项目都能用）
 pi install git:github.com/woertedetiankong/pi-lab
-
-# 或只装到当前项目（写入 .pi/settings.json）
-pi install git:github.com/woertedetiankong/pi-lab -l
-
-# 或不安装，只在这次运行中试用
-pi -e git:github.com/woertedetiankong/pi-lab
 ```
 
-安装后重启 pi，在 git 仓库里的固件项目中，底部状态栏会出现 `🔌`（也可以输入 `/lab` 确认已加载）。更新到最新版本：`pi update --extensions`。卸载：`pi remove git:github.com/woertedetiankong/pi-lab`。
+Restart pi in your firmware project and type `/lab web`: the board panel opens in your browser with the board's serial output. Select a few log lines, type a question and press **Ask pi**. Or just ask pi to fix something: it flashes with `board_flash` and checks the result with `board_serial`.
 
-开发者从本地目录安装：`pi install /path/to/pi-lab`。
+Other ways to install: `pi install git:github.com/woertedetiankong/pi-lab -l` for the current project only (`.pi/settings.json`), or `pi -e git:github.com/woertedetiankong/pi-lab` to try it for one run. Update with `pi update --extensions`; remove with `pi remove git:github.com/woertedetiankong/pi-lab`. From a local checkout: `pi install /path/to/pi-lab`.
 
-## 开发
+## Features
+
+1. **Board tools**, so the agent does not have to work out the serial port and resets on its own.
+   - `board_flash`: recognizes ESP-IDF and PlatformIO projects, sets up the toolchain environment, builds and flashes. A failed build returns just the compiler errors. After flashing it waits for the USB port to settle, then resets the board so the new firmware runs. If the USB port stops answering, it recovers it and tries again.
+   - `board_serial`: resets the board and captures the serial output from the first boot line, for a number of seconds or until a line matches `until` (instead of `idf.py monitor`, which never exits). Long logs are folded, with the full log saved to a file. The port is opened by lowering RTS before DTR, so opening it does not reset an ESP32's native USB serial port.
+   - `board_recover`: when the board's USB port stops answering, a software unplug and replug (USB re-enumeration, macOS).
+2. **Board panel (web)**: `/lab web` opens it at `/lab/`, on the same local page as pi-kb and pi-sessions.
+   - Live serial log: timestamps, ESP-IDF log levels in colour, a filter. Resets and flashes show as separators.
+   - **Plot**: `name=value` pairs in the log (`fps=50`, `temp: 21.5`, `|a|=0.997`) are plotted automatically. Addresses and clock settings printed at start-up are left out, and values printed only once or twice are hidden until you turn them on. Click a point to jump to its log line.
+   - **Ask pi**: press on the log and it stops scrolling; drag over lines to select them (click for one line, Shift-click for a range, Cmd/Ctrl-click to add, Cmd/Ctrl+C to copy). Type a question and press **Ask pi**: the lines go to the agent in your terminal with their times, queued after its current turn if it is busy. **Latest** resumes following the log.
+   - **Port and baud rate**: choose the port (auto: the most recently connected board) and the baud rate (9600 to 2000000), saved per project in `.pi/lab.json`. A chosen port that is not connected falls back to auto. When most of what arrives is unreadable, the panel says the baud rate probably does not match and offers common rates. The native USB on the ESP32-S3/C3 ignores the baud rate.
+   - Reset the board, recover the USB port, and **release the port** for your own tools or IDE (click again to take it back).
+   - pi-lab owns the serial port through one serial hub shared by the panel, `board_serial` and `board_flash`. It lends the port to flashing and to bash commands that open it (a flash, `idf.py monitor`, esptool, a script of the agent's own), so neither you nor the agent meets "port busy". When no panel is watching and no tool is reading, the port is released.
+3. **Crash decoding**: when the log shows an ESP-IDF `Backtrace:`, `abort() was called at PC …` or the PC of a register dump, the addresses are turned into functions and source lines with the ELF in the project's `build/` and addr2line (`↳ store_sample at main/main.c:14`). The decoded lines go into the log, are highlighted in the panel, and are part of what `board_serial` returns to the agent.
+4. **Guard**: checked before each tool call.
+   - Writing into an SDK, toolchain or system directory (`~/.espressif`, `$IDF_PATH`, `~/.platformio`, `/opt/homebrew`, …), `pip install` into a shared Python environment, `sudo` and `brew install` need your confirmation. Without a UI (`pi -p`) they are blocked, and the agent is told how to do it inside the project instead (copy the component into the project, use a virtual environment in the project).
+   - Operations that change a chip permanently, such as burning eFuses, secure boot or flash encryption keys and read protection, are flagged as hardware risks.
+   - `PI_LAB_GUARD=off` turns it off.
+5. **Debug ledger**: with `lab_ledger` the agent records the target board, what the hardware showed and its hypotheses. The ledger goes into the system prompt every turn and survives context compaction.
+   - Something newly recorded is a single observation: listed apart, with a note not to build on it. Reproduced from a clean build with one change, it becomes a fact with `verify_fact`.
+   - Marking a hypothesis ruled out or confirmed needs evidence; a new hypothesis similar to one already ruled out is refused (in English and Chinese).
+   - After 30 tool calls without a reproduced fact or a settled hypothesis, the agent is asked once to step back: restate the original symptom and read the relevant code again from the start.
+   - The ledger follows the session's branches.
+6. **Firmware sync**: after a successful flash, pi-lab fingerprints the firmware sources (git HEAD, changes, untracked files). As soon as a firmware file changes, the status bar shows `⚠ board runs stale firmware`, and the agent sees it too. When the agent changed firmware but is about to stop without flashing, it is reminded once. Needs the project to be a git repository.
+7. **Log folding**: of the build, flash and serial logs sent to the model, only the latest two stay whole; older ones keep their start, end and lines that look like failures. The session file keeps every log in full.
+8. **Board packs**: what is known about a board, in `boards/<board>/`.
+   - `board.json`: chip, I2C buses and their devices, pins, button behaviour, known quirks, datasheets. Every entry says where it came from: measured on the board, or the vendor's docs or driver library.
+   - `notes/`: lessons verified on the board, in pi-kb's note format.
+   - `/lab board <id>` chooses the board for a project (saved in `.pi/lab.json`); when a matching USB device is connected and no board is chosen, pi-lab suggests it. The chosen board's pins, buses and quirks go into the prompt, and its datasheets are downloaded once to `~/.pi/agent/pi-lab/boards/<id>/docs/`.
+   - With [pi-kb](https://github.com/woertedetiankong/pi-kb) installed, the datasheets and notes are imported into a collection named after the board, and the agent cites them with page numbers. Without it, the agent reads the files directly.
+   - Available now: `m5sticks3` (the M5StickS3: internal I2C, BMI270, M5PM1, and four notes: the port-open reset, USB wedges, the side button's download mode, the BMI270 init sequence).
+
+## Commands
+
+| Command | What it does |
+| --- | --- |
+| `/lab web` | Open the board panel in the browser (`/lab web url` prints the address, `/lab web stop` stops the page server) |
+| `/lab serial [port \| auto \| baud]` | Show or set this project's serial port and baud rate, e.g. `/lab serial 9600`, `/lab serial auto` |
+| `/lab` | Show the debug ledger and the firmware sync state |
+| `/lab target <text>` | Set the target board, e.g. `/lab target STM32F407 on /dev/ttyUSB0` |
+| `/lab flashed` | Mark the board as up to date after flashing outside pi (an IDE, a GUI flasher) |
+| `/lab clear` | Clear the ledger on the current branch |
+| `/lab board [id \| none]` | Show or choose the board pack for this project |
+
+Firmware sync needs the project to be a git repository; elsewhere that part is off. In a git project, the status bar shows `🔌` once pi-lab is loaded.
+
+## Known issues
+
+- The ESP32-S3's native USB occasionally wedges as the app takes over the USB port at start-up (the log stops at the bootloader's `Disabling RNG early entropy source...`). After a reset, pi-lab detects this, re-enumerates the USB port and resets once more; otherwise use **Recover USB** in the panel or `board_recover`.
+- In one test, pi sat idle for 10 minutes around a `board_flash` call with no child process running; the cause is not known yet (possibly a stalled model request). If it happens, press Esc and try again.
+
+## Benchmark
+
+`bench/` holds debugging tasks run on a real M5StickS3: six ESP-IDF projects with planted bugs; after the agent is done, a script flashes its code and judges the board's output. See [bench/README.md](bench/README.md). Results so far (deepseek-flash):
+
+- Plain pi and pi-lab fixed all six scenarios, and **pi-lab did not make the agent faster**. The ledger-only version was slower in all six, and once took two misobserved "facts" for real and spent 30 minutes on the wrong theory (hence the single-observation rule). The current version, in projects that only name the board, was faster in two scenarios and slower in four.
+- In projects that only name the board, plain pi spent about 10 minutes working out serial resets in 1 of 12 runs, and tried to change the machine outside the project in 3 (probing `sudo` twice, installing into the shared Python once). pi-lab: 0 of 12.
+
+The demo video is recorded with `demo/record.mjs`: the real board, the real agent and Bosch's datasheet, nothing staged. See [demo/README.md](demo/README.md) (in Chinese).
+
+## Development
 
 ```bash
 npm install

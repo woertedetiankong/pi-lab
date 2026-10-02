@@ -38,8 +38,13 @@
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
 body { background: var(--bg); color: var(--text); font: 14px/1.45 var(--sans); display: flex; flex-direction: column; }
-header { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); flex-wrap: wrap; }
-.status { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1 1 260px; }
+header { display: flex; flex-direction: column; gap: 8px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
+header .bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0; }
+.brand { font-weight: 650; white-space: nowrap; display: flex; align-items: center; gap: 8px; }
+.pi-web-multi .brand-name { display: none; }
+.brand .logo { width: 22px; height: 22px; border-radius: 6px; background: var(--accent); color: #fff; display: grid; place-items: center; font-size: 13px; }
+#pi-web-nav { min-width: 0; overflow-x: auto; }
+.status { display: flex; align-items: center; gap: 8px; min-width: 0; margin-left: auto; justify-content: flex-end; }
 .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--faint); flex: none; }
 .dot.open { background: var(--ok); } .dot.waiting { background: var(--warn); } .dot.paused { background: var(--accent); }
 .status .port { font-family: var(--mono); font-size: 13px; }
@@ -99,7 +104,12 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 </head>
 <body>
 <header>
+  <div class="bar">
+    <div class="brand"><span class="logo">π</span><span class="brand-name" id="brandName"></span></div>
+    <nav id="pi-web-nav"></nav>
   <div class="status"><span class="dot" id="dot"></span><span class="port" id="port">…</span><span class="meta" id="meta"></span></div>
+  </div>
+  <div class="bar controls">
   <select id="portSel" title=""></select>
   <select id="baudSel" title=""></select>
   <input type="search" id="filter">
@@ -109,6 +119,7 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
   <button id="reset"></button>
   <button id="recover"></button>
   <button id="clear"></button>
+  </div>
 </header>
 <div id="garbled"></div>
 <main>
@@ -128,7 +139,7 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 <script>
 "use strict";
 const T = {
-  zh: { title: "pi 板子", filter: "过滤日志…", follow: "自动滚动", plot: "曲线", pause: "释放串口", resume: "取回串口", reset: "复位板子", recover: "恢复 USB", recoverTip: "板子没反应时：用软件拔插一次 USB", recovered: "USB 已重新连接", clear: "清空",
+  zh: { title: "pi 板子", brand: "板子", filter: "过滤日志…", follow: "自动滚动", plot: "曲线", pause: "释放串口", resume: "取回串口", reset: "复位板子", recover: "恢复 USB", recoverTip: "板子没反应时：用软件拔插一次 USB", recovered: "USB 已重新连接", clear: "清空",
     empty: "等板子输出…（打开这个页面时，pi 会接管串口；点「释放串口」可以让其他程序使用）", noBoard: "没有找到板子：请插上 USB 线",
     plotEmpty: "日志里出现 名称=数值（例如 fps=50、temp: 21.5）时，这里会画出曲线", selected: n => `已选 ${n} 行`, latest: "↓ 回到最新", pickTip: "按住拖动可选多行，Shift 点击选一段，⌘ 点击加选",
     question: "想问什么？（留空：这是什么意思，有问题就找原因）", ask: "问 pi", copy: "复制", copied: "已复制", asked: "已发给 pi，回到终端看回答",
@@ -136,7 +147,7 @@ const T = {
     portAuto: "串口：自动", portTip: "看哪个串口（拔插后名字可能会变，选「自动」最省心）", baudTip: "波特率：要和程序里设置的一致。ESP32-S3/C3 的原生 USB 不受影响", baud: n => `${n} 波特`,
     garbled: b => `收到的内容大部分是乱码：波特率（${b}）可能和程序里设置的不一致。试试：`,
     firmware: { never: "本次会话还没烧录", synced: "固件与代码一致", stale: "⚠ 板子上的固件不是最新代码" }, window: "时间窗" },
-  en: { title: "pi Board", filter: "Filter the log…", follow: "Follow", plot: "Plot", pause: "Release port", resume: "Take port back", reset: "Reset board", recover: "Recover USB", recoverTip: "When the board stops answering: a software unplug and replug", recovered: "USB re-enumerated", clear: "Clear",
+  en: { title: "pi Board", brand: "Board", filter: "Filter the log…", follow: "Follow", plot: "Plot", pause: "Release port", resume: "Take port back", reset: "Reset board", recover: "Recover USB", recoverTip: "When the board stops answering: a software unplug and replug", recovered: "USB re-enumerated", clear: "Clear",
     empty: "Waiting for the board… (pi holds the serial port while this page is open; Release port lets other programs use it)", noBoard: "No board found: plug in its USB cable",
     plotEmpty: "When the log prints name=value pairs (fps=50, temp: 21.5), they are plotted here", selected: n => `${n} line${n > 1 ? "s" : ""} selected`, latest: "↓ Latest", pickTip: "Drag to select several lines, Shift-click for a range, ⌘-click to add",
     question: "Your question (empty: what does this mean, and find the cause if it is a problem)", ask: "Ask pi", copy: "Copy", copied: "Copied", asked: "Sent to pi; the answer is in the terminal",
@@ -160,6 +171,7 @@ const toast = msg => { const el = $("toast"); el.textContent = msg; el.style.dis
 
 for (const [id, key] of [["follow", "follow"], ["plotBtn", "plot"], ["reset", "reset"], ["recover", "recover"], ["clear", "clear"], ["ask", "ask"], ["copy", "copy"]]) $(id).textContent = t[key];
 $("recover").title = t.recoverTip;
+$("brandName").textContent = t.brand;
 $("filter").placeholder = t.filter; $("question").placeholder = t.question; $("empty").textContent = t.empty; $("plotEmpty").textContent = t.plotEmpty;
 $("windowLabel").textContent = t.window;
 

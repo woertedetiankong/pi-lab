@@ -2,7 +2,7 @@
 
 给 [pi](https://pi.dev/) 用的嵌入式调试插件：让 agent 可靠地烧录和读取开发板，不改动项目以外的工具链，并在长时间调试中记住试过什么。
 
-> 早期版本（v0.3.2）。目前在 ESP32-S3（M5StickS3）上实测；板级工具支持 ESP-IDF 和 PlatformIO 项目，USB 自动恢复仅支持 macOS。
+> 早期版本（v0.3.3）。目前在 ESP32-S3（M5StickS3）上实测；板级工具支持 ESP-IDF 和 PlatformIO 项目，USB 自动恢复仅支持 macOS。
 
 ![板子面板：M5StickS3 的 BMI270 加速度计实时曲线和串口日志](docs/panel.png)
 

@@ -4,7 +4,7 @@ English · [中文](README.zh.md)
 
 Embedded debugging for the [pi](https://pi.dev/) coding agent: it flashes and reads your board reliably, shares a live serial panel with you, stays out of your toolchain, and keeps track of what it tried over a long debugging session.
 
-> Early release (v0.3.3). Tested on an ESP32-S3 (M5StickS3) on macOS. The board tools work with ESP-IDF and PlatformIO projects; automatic USB recovery is macOS only.
+> Early release (v0.3.4). Tested on an ESP32-S3 (M5StickS3) on macOS. The board tools work with ESP-IDF and PlatformIO projects; automatic USB recovery is macOS only.
 
 ![The board panel: live plot of an M5StickS3's BMI270 accelerometer and its serial log](docs/panel.png)
 
@@ -31,6 +31,7 @@ Other ways to install: `pi install git:github.com/woertedetiankong/pi-lab -l` fo
    - **Plot**: `name=value` pairs in the log (`fps=50`, `temp: 21.5`, `|a|=0.997`) are plotted automatically. Addresses and clock settings printed at start-up are left out, and values printed only once or twice are hidden until you turn them on. Click a point to jump to its log line.
    - **Ask pi**: press on the log and it stops scrolling; drag over lines to select them (click for one line, Shift-click for a range, Cmd/Ctrl-click to add, Cmd/Ctrl+C to copy). Type a question and press **Ask pi**: the lines go to the agent in your terminal with their times, queued after its current turn if it is busy. **Latest** resumes following the log.
    - **Port and baud rate**: choose the port (auto: the most recently connected board) and the baud rate (9600 to 2000000), saved per project in `.pi/lab.json`. A chosen port that is not connected falls back to auto. When most of what arrives is unreadable, the panel says the baud rate probably does not match and offers common rates. The native USB on the ESP32-S3/C3 ignores the baud rate.
+   - **Board pack**: choose the project's board and see what pi knows about it: chip, buses and the devices on them, pins, buttons, known quirks, each marked measured on the board or taken from the vendor's docs; read the verified notes and open the datasheets. When the connected device matches a pack, the panel suggests it.
    - Reset the board, recover the USB port, and **release the port** for your own tools or IDE (click again to take it back).
    - pi-lab owns the serial port through one serial hub shared by the panel, `board_serial` and `board_flash`. It lends the port to flashing and to bash commands that open it (a flash, `idf.py monitor`, esptool, a script of the agent's own), so neither you nor the agent meets "port busy". When no panel is watching and no tool is reading, the port is released.
 3. **Crash decoding**: when the log shows an ESP-IDF `Backtrace:`, `abort() was called at PC …` or the PC of a register dump, the addresses are turned into functions and source lines with the ELF in the project's `build/` and addr2line (`↳ store_sample at main/main.c:14`). The decoded lines go into the log, are highlighted in the panel, and are part of what `board_serial` returns to the agent.
@@ -48,7 +49,7 @@ Other ways to install: `pi install git:github.com/woertedetiankong/pi-lab -l` fo
 8. **Board packs**: what is known about a board, in `boards/<board>/`.
    - `board.json`: chip, I2C buses and their devices, pins, button behaviour, known quirks, datasheets. Every entry says where it came from: measured on the board, or the vendor's docs or driver library.
    - `notes/`: lessons verified on the board, in pi-kb's note format.
-   - `/lab board <id>` chooses the board for a project (saved in `.pi/lab.json`); when a matching USB device is connected and no board is chosen, pi-lab suggests it. The chosen board's pins, buses and quirks go into the prompt, and its datasheets are downloaded once to `~/.pi/agent/pi-lab/boards/<id>/docs/`.
+   - `/lab board <id>`, or **Board pack** in the panel, chooses the board for a project (saved in `.pi/lab.json`); when a matching USB device is connected and no board is chosen, pi-lab suggests it. The chosen board's pins, buses and quirks go into the prompt, and its datasheets are downloaded once to `~/.pi/agent/pi-lab/boards/<id>/docs/`.
    - With [pi-kb](https://github.com/woertedetiankong/pi-kb) installed, the datasheets and notes are imported into a collection named after the board, and the agent cites them with page numbers. Without it, the agent reads the files directly.
    - Available now: `m5sticks3` (the M5StickS3: internal I2C, BMI270, M5PM1, and four notes: the port-open reset, USB wedges, the side button's download mode, the BMI270 init sequence).
 

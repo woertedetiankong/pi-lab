@@ -1,9 +1,13 @@
 // The board panel on the pi-web page (/lab/): the board's serial output live, a plot of the numbers it prints,
 // reset and pause, and "ask pi" about the lines the user selects.
 
+import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+import { readFile as readBytes } from "node:fs/promises";
+import { basename, join } from "node:path";
 import type { BoardAccess } from "./board-tools.ts";
+import { type BoardPack, docsDir } from "./boards.ts";
 import { type WebApp, webError, type WebLanguage, type WebRequest } from "./hub.ts";
 import { BAUDS } from "./project-config.ts";
 import type { LogLine } from "./serial-hub.ts";
@@ -13,6 +17,10 @@ export interface PanelSession {
   status(): { board?: string; firmware?: "unknown" | "never" | "synced" | "stale" };
   /** Send a prompt to the agent, queued after the current turn when it is busy. */
   ask(prompt: string): void;
+  /** The board packs, which match a connected device, the one chosen for the project, and pi-kb's shelf for it. */
+  boards(): Promise<{ packs: BoardPack[]; connected: string[]; current?: BoardPack; kbShelf?: string; kbInstalled: boolean }>;
+  /** Choose the project's board pack (undefined: none). */
+  chooseBoard(id: string | undefined): Promise<void>;
 }
 
 const PAGE = fileURLToPath(new URL("../web/lab.html", import.meta.url));
@@ -39,6 +47,42 @@ export class LabApp implements WebApp {
   async handle(req: WebRequest): Promise<unknown> {
     const hub = await this.board.hub();
     const route = `${req.method} ${req.path}`;
+    // The board pack panel: works without a board connected.
+    if (route === "GET /board") {
+      if (!this.session) throw webError(503, "pi is not ready / pi 还没准备好");
+      const b = await this.session.boards();
+      const brief = (p: BoardPack) => ({ id: p.id, name: p.name, vendor: p.vendor, chip: p.chip, connected: b.connected.includes(p.id) });
+      const current = b.current && {
+        ...brief(b.current), url: b.current.url, console: b.current.console, sources: b.current.sources, buses: b.current.buses ?? [],
+        pins: b.current.pins ?? [], buttons: b.current.buttons, quirks: b.current.quirks ?? [],
+        docs: (b.current.docs ?? []).map(d => ({ title: d.title, file: d.file, url: d.url })),
+        notes: (b.current.notes ?? []).map(n => ({ file: basename(n), title: noteTitle(b.current!, n) })),
+      };
+      return { packs: b.packs.map(brief), current: current ?? null, kbShelf: b.kbShelf ?? null, kbInstalled: b.kbInstalled };
+    }
+    if (route === "POST /board") {
+      if (!this.session) throw webError(503, "pi is not ready / pi 还没准备好");
+      const body = await req.json();
+      await this.session.chooseBoard(typeof body.id === "string" && body.id ? body.id : undefined);
+      return { ok: true };
+    }
+    if (route === "GET /board/note" || route === "GET /board/doc") {
+      const current = (await this.session?.boards())?.current;
+      const name = req.query.get("file") ?? "";
+      if (!current) throw webError(404, "No board chosen / 还没选板卡");
+      if (route === "GET /board/note") {
+        const note = (current.notes ?? []).find(n => basename(n) === name);
+        if (!note) throw webError(404, "No such note / 没有这篇笔记");
+        return { text: await readFile(join(current.dir, note), "utf8") };
+      }
+      const doc = (current.docs ?? []).find(d => d.file === name);
+      if (!doc) throw webError(404, "No such datasheet / 没有这份手册");
+      try {
+        return { binary: await readBytes(join(docsDir(current), doc.file)), type: "application/pdf", filename: doc.file };
+      } catch {
+        throw webError(404, "The datasheet has not been downloaded yet / 手册还没下载");
+      }
+    }
     if (route === "GET /state") {
       const serial = this.board.serial();
       return { port: hub?.port, baud: hub?.baud ?? serial.baud, state: hub ? (this.paused ? "paused" : hub.state) : "no-board", detail: hub?.detail,
@@ -117,4 +161,14 @@ export function askPrompt(lines: LogLine[], question: string, port: string): str
     "```",
     question || "What does this mean? If it shows a problem, find the cause.",
   ].join("\n");
+}
+
+/** A note's title from its front matter, else its file name. */
+function noteTitle(pack: BoardPack, note: string): string {
+  try {
+    const text = readFileSync(join(pack.dir, note), "utf8");
+    return /^title:\s*"?(.*?)"?\s*$/m.exec(text)?.[1] ?? basename(note);
+  } catch {
+    return basename(note);
+  }
 }

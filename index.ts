@@ -88,7 +88,8 @@ export default function piLab(pi: ExtensionAPI): void {
     }
   };
   // pi-kb answers with the shelf it put the board's datasheets and notes on.
-  pi.events?.on("pi-kb:board-shelf", data => { kbShelf = (data as { shelf?: string }).shelf; });
+  let kbSeen = false;
+  pi.events?.on("pi-kb:board-shelf", data => { kbShelf = (data as { shelf?: string }).shelf; kbSeen = true; });
 
   let projectDir = process.cwd();
   const usePack = async (ctx: ExtensionContext) => {
@@ -129,6 +130,19 @@ export default function piLab(pi: ExtensionAPI): void {
     panel.session = {
       status: () => ({ board: pack?.name, firmware: firmware.kind }),
       ask: prompt => pi.sendUserMessage(prompt, ctx.isIdle() ? undefined : { deliverAs: "followUp" }),
+      boards: async () => ({
+        packs,
+        connected: candidates(packs, await usbIds(run(ctx.cwd)).catch(() => [])).map(p => p.id),
+        current: pack,
+        kbShelf,
+        kbInstalled: kbSeen,
+      }),
+      chooseBoard: async id => {
+        setProjectBoard(projectRoot(ctx.cwd), id);
+        await usePack(ctx);
+        // pi-kb answers the board event shortly; give it a moment so the page shows its shelf.
+        for (let i = 0; i < 10 && pack && !kbShelf; i++) await new Promise(r => setTimeout(r, 200));
+      },
     };
     // Mounted early (the server is not started) so the other pi-web pages link here.
     web().mount(panel);

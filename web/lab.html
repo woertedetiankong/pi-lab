@@ -82,6 +82,30 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .row.sel:hover { background: var(--select); }
 #log.picking .row { user-select: none; cursor: pointer; }
 #log .row { cursor: pointer; }
+#drawer { position: fixed; top: 0; right: 0; width: min(460px, 100%); height: 100%; background: var(--panel); border-left: 1px solid var(--line-strong); box-shadow: -8px 0 30px rgba(0,0,0,.10); z-index: 15; display: flex; flex-direction: column; }
+#drawer[hidden] { display: none; }
+#drawer .dhead { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; border-bottom: 1px solid var(--line); font-size: 15px; }
+#drawer .dhead button { border: 0; background: none; font-size: 16px; color: var(--muted); }
+#drawer .dbody { overflow: auto; padding: 14px 18px 40px; }
+.dpick { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; color: var(--muted); font-size: 13px; }
+.dpick select { flex: 1; max-width: none; }
+#dContent h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 20px 0 8px; font-weight: 600; }
+#dContent .card { border: 1px solid var(--line); border-radius: var(--r); padding: 10px 12px; margin-bottom: 8px; font-size: 13px; }
+#dContent .card .sub { color: var(--muted); font-size: 12px; margin-top: 3px; }
+#dContent .kv { display: grid; grid-template-columns: 1fr auto; gap: 6px 12px; font-size: 13px; }
+#dContent .kv code, #dContent .mono { font-family: var(--mono); font-size: 12px; }
+#dContent .src { display: inline-block; font-size: 11px; padding: 0 6px; border-radius: 999px; border: 1px solid var(--line-strong); color: var(--muted); margin-left: 6px; white-space: nowrap; }
+#dContent .src.measured { border-color: var(--ok); color: var(--ok); }
+#dContent .quirk { background: var(--warn-soft); border-radius: 8px; padding: 8px 10px; margin-bottom: 6px; font-size: 13px; }
+#dContent .hint { color: var(--muted); font-size: 13px; line-height: 1.6; }
+#dContent a { color: var(--accent-text); }
+#dContent .doc { display: flex; justify-content: space-between; gap: 10px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+#dContent details { border-bottom: 1px solid var(--line); padding: 8px 0; font-size: 13px; }
+#dContent details summary { cursor: pointer; }
+#dContent .note { font-size: 13px; line-height: 1.55; padding: 6px 2px; }
+#dContent .note pre { background: var(--bg); padding: 8px; border-radius: 6px; overflow: auto; font: 12px var(--mono); }
+#dContent .note table { border-collapse: collapse; font-size: 12px; margin: 6px 0; }
+#dContent .note td, #dContent .note th { border: 1px solid var(--line); padding: 3px 6px; vertical-align: top; }
 #latest { position: fixed; right: 24px; bottom: 76px; display: none; z-index: 4; box-shadow: 0 2px 10px rgba(0,0,0,.12); }
 #latest.show { display: block; }
 .row.E .x { color: var(--danger); } .row.W .x { color: var(--warn); } .row.D .x, .row.V .x { color: var(--faint); }
@@ -119,6 +143,7 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
   <button id="reset"></button>
   <button id="recover"></button>
   <button id="clear"></button>
+  <button id="boardBtn"></button>
   </div>
 </header>
 <div id="garbled"></div>
@@ -133,6 +158,13 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
   <div id="log"><div id="empty"></div></div>
 </main>
 <div id="askBar"><span class="count" id="selCount"></span><input type="text" id="question"><button id="copy"></button><button class="primary" id="ask"></button></div>
+<aside id="drawer" hidden>
+  <div class="dhead"><b id="dTitle"></b><button id="dClose">✕</button></div>
+  <div class="dbody">
+    <label class="dpick"><span id="dPickLabel"></span><select id="boardSel"></select></label>
+    <div id="dContent"></div>
+  </div>
+</aside>
 <button id="latest"></button>
 <div id="tip"></div>
 <div id="toast"></div>
@@ -144,6 +176,11 @@ const T = {
     plotEmpty: "日志里出现 名称=数值（例如 fps=50、temp: 21.5）时，这里会画出曲线", selected: n => `已选 ${n} 行`, latest: "↓ 回到最新", pickTip: "按住拖动可选多行，Shift 点击选一段，⌘ 点击加选",
     question: "想问什么？（留空：这是什么意思，有问题就找原因）", ask: "问 pi", copy: "复制", copied: "已复制", asked: "已发给 pi，回到终端看回答",
     states: { open: "已连接", waiting: "等待板子…", released: "串口已释放", paused: "已释放给其他程序", stopped: "未连接", "no-board": "没有板子" },
+    board: "板卡", boardTitle: "板卡包", pickBoard: "这个项目的板子", noBoard: "（不用板卡包）", connectedMark: " · 已连接的设备匹配",
+    boardIntro: "选定板子后，pi 会知道它的引脚、总线上的器件和已知的坑；芯片手册和验证过的经验笔记会给 agent 查阅（装了 pi-kb 时导入知识库）。",
+    boardSuggest: n => `插着的设备看起来是 ${n}，可以在上面选它。`, chip: "芯片", buses: "总线和器件", pins: "引脚", buttons: "按键", quirks: "已知的坑",
+    docs: "芯片手册和经验笔记", openPdf: "打开 PDF", notDownloaded: "选定后自动下载", vendorDocs: "厂商文档", inKb: n => `在知识库中搜索「${n}」`,
+    measured: "实测", srcNames: { m5docs: "M5Stack 文档", m5unified: "M5Unified 驱动" }, contentLang: "板卡包内容为英文。",
     portAuto: "串口：自动", portTip: "看哪个串口（拔插后名字可能会变，选「自动」最省心）", baudTip: "波特率：要和程序里设置的一致。ESP32-S3/C3 的原生 USB 不受影响", baud: n => `${n} 波特`,
     garbled: b => `收到的内容大部分是乱码：波特率（${b}）可能和程序里设置的不一致。试试：`,
     firmware: { never: "本次会话还没烧录", synced: "固件与代码一致", stale: "⚠ 板子上的固件不是最新代码" }, window: "时间窗" },
@@ -152,6 +189,11 @@ const T = {
     plotEmpty: "When the log prints name=value pairs (fps=50, temp: 21.5), they are plotted here", selected: n => `${n} line${n > 1 ? "s" : ""} selected`, latest: "↓ Latest", pickTip: "Drag to select several lines, Shift-click for a range, ⌘-click to add",
     question: "Your question (empty: what does this mean, and find the cause if it is a problem)", ask: "Ask pi", copy: "Copy", copied: "Copied", asked: "Sent to pi; the answer is in the terminal",
     states: { open: "connected", waiting: "waiting for the board…", released: "port released", paused: "released to other programs", stopped: "not connected", "no-board": "no board" },
+    board: "Board pack", boardTitle: "Board pack", pickBoard: "This project's board", noBoard: "(no board pack)", connectedMark: " · matches a connected device",
+    boardIntro: "With a board chosen, pi knows its pins, the devices on its buses and its known quirks; its datasheets and verified notes are there for the agent to look up (imported into pi-kb when installed).",
+    boardSuggest: n => `The connected device looks like a ${n}; you can choose it above.`, chip: "Chip", buses: "Buses and devices", pins: "Pins", buttons: "Buttons", quirks: "Known quirks",
+    docs: "Datasheets and notes", openPdf: "Open PDF", notDownloaded: "downloaded once chosen", vendorDocs: "vendor docs", inKb: n => `Search "${n}" in the knowledge base`,
+    measured: "measured", srcNames: { m5docs: "M5Stack docs", m5unified: "M5Unified driver" }, contentLang: "",
     portAuto: "Port: auto", portTip: "Which serial port to watch (names can change when you replug; auto is simplest)", baudTip: "Baud rate: must match the firmware's. Native USB on the ESP32-S3/C3 ignores it", baud: n => `${n} baud`,
     garbled: b => `Most of what arrives is unreadable: the baud rate (${b}) probably does not match the firmware's. Try:`,
     firmware: { never: "not flashed in this session", synced: "firmware matches the code", stale: "⚠ the board runs older firmware than the code" }, window: "window" },
@@ -268,7 +310,7 @@ function extendTo(n) {
 log.addEventListener("mouseover", e => { if (!drag) return; const row = rowAt(e); if (row) extendTo(Number(row.dataset.n)); });
 document.addEventListener("mouseup", () => { drag = null; log.classList.remove("picking"); });
 document.addEventListener("keydown", e => {
-  if (e.key === "Escape") { selected.clear(); updateSelection(); }
+  if (e.key === "Escape") { if (!$("drawer").hidden) { $("dClose").click(); return; } selected.clear(); updateSelection(); }
   if ((e.metaKey || e.ctrlKey) && e.key === "c" && selected.size && !window.getSelection().toString() && document.activeElement !== $("question")) {
     navigator.clipboard.writeText(pickedText()).then(() => toast(t.copied)); e.preventDefault();
   }
@@ -446,6 +488,90 @@ function checkGarbled() {
   }
   el.classList.toggle("show", show);
 }
+
+// ---- board pack drawer ----
+$("boardBtn").textContent = t.board; $("dTitle").textContent = t.boardTitle; $("dPickLabel").textContent = t.pickBoard;
+const esc = v => String(v ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+// A small Markdown renderer for the pack's notes: headings, code, tables, lists, bold and inline code.
+function markdown(text) {
+  const body = text.replace(/^---\n[\s\S]*?\n---\n/, "");
+  const inline = s => esc(s).replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
+  const out = []; const lines = body.split("\n"); let i = 0;
+  while (i < lines.length) {
+    const l = lines[i];
+    if (l.startsWith("```")) { const code = []; i++; while (i < lines.length && !lines[i].startsWith("```")) code.push(lines[i++]); i++; out.push(`<pre>${esc(code.join("\n"))}</pre>`); continue; }
+    if (/^\|/.test(l)) {
+      const rows = []; while (i < lines.length && /^\|/.test(lines[i])) rows.push(lines[i++]);
+      const cells = r => r.replace(/^\||\|$/g, "").split("|").map(c => c.trim());
+      out.push("<table>" + rows.filter(r => !/^\|\s*-/.test(r)).map((r, k) => "<tr>" + cells(r).map(c => k ? `<td>${inline(c)}</td>` : `<th>${inline(c)}</th>`).join("") + "</tr>").join("") + "</table>");
+      continue;
+    }
+    if (/^#{1,6} /.test(l)) { i++; if (/^# /.test(l)) continue; out.push(`<p><b>${inline(l.replace(/^#+ /, ""))}</b></p>`); continue; }
+    if (/^\s*([-*]|\d+\.) /.test(l)) { const items = []; while (i < lines.length && /^\s*([-*]|\d+\.) /.test(lines[i])) items.push(lines[i++].replace(/^\s*([-*]|\d+\.) /, "")); out.push("<ul>" + items.map(x => `<li>${inline(x)}</li>`).join("") + "</ul>"); continue; }
+    if (l.trim()) { const para = []; while (i < lines.length && lines[i].trim() && !/^(```|\||#|\s*([-*]|\d+\.) )/.test(lines[i])) para.push(lines[i++]); out.push(`<p>${inline(para.join(" "))}</p>`); continue; }
+    i++;
+  }
+  return out.join("");
+}
+let boardInfo = null;
+const source = (info, key) => {
+  if (!key) return "";
+  if (key === "board") return `<span class="src measured" title="${esc(info.sources?.board ?? "")}">${t.measured}</span>`;
+  return `<span class="src" title="${esc(info.sources?.[key] ?? "")}">${esc(t.srcNames[key] ?? key)}</span>`;
+};
+async function loadBoard() {
+  try { boardInfo = await api("/board"); } catch (err) { $("dContent").innerHTML = `<p class="hint">${esc(err.message)}</p>`; return; }
+  const sel = $("boardSel"); sel.textContent = "";
+  sel.add(new Option(t.noBoard, ""));
+  for (const p of boardInfo.packs) sel.add(new Option(p.name + (p.connected ? t.connectedMark : ""), p.id));
+  sel.value = boardInfo.current?.id ?? "";
+  const c = boardInfo.current;
+  if (!c) {
+    const match = boardInfo.packs.find(p => p.connected);
+    $("dContent").innerHTML = `<p class="hint">${esc(t.boardIntro)}</p>` + (match ? `<p class="hint">${esc(t.boardSuggest(match.name))}</p>` : "");
+    return;
+  }
+  const html = [];
+  html.push(`<div class="card"><b>${esc(c.name)}</b>${c.vendor ? ` · ${esc(c.vendor)}` : ""}<div class="sub">${t.chip}: ${esc(c.chip ?? "")}</div>` +
+    (c.url ? `<div class="sub"><a href="${esc(c.url)}" target="_blank" rel="noopener">${t.vendorDocs} ↗</a></div>` : "") +
+    (t.contentLang ? `<div class="sub">${t.contentLang}</div>` : "") + `</div>`);
+  if (c.buses.length) {
+    html.push(`<h3>${t.buses}</h3>`);
+    for (const bus of c.buses) {
+      html.push(`<div class="card"><b>${esc(bus.name)}</b>${source(c, bus.source)}<div class="sub mono">SDA GPIO${esc(bus.sda)} · SCL GPIO${esc(bus.scl)}</div>` +
+        (bus.devices ?? []).map(d => `<div style="margin-top:8px"><span class="mono">${esc(d.address)}</span> ${esc(d.name)}${source(c, d.source)}${d.note ? `<div class="sub">${esc(d.note)}</div>` : ""}</div>`).join("") + `</div>`);
+    }
+  }
+  if (c.pins.length) {
+    html.push(`<h3>${t.pins}</h3><div class="card kv">` + c.pins.map(p => `<span>${esc(p.function)}${source(c, p.source)}</span><code>GPIO ${esc(p.gpio)}</code>`).join("") + `</div>`);
+  }
+  if (c.buttons) html.push(`<h3>${t.buttons}</h3><div class="card">${esc(c.buttons)}</div>`);
+  if (c.quirks.length) html.push(`<h3>${t.quirks}</h3>` + c.quirks.map(q => `<div class="quirk">⚠ ${esc(q)}</div>`).join(""));
+  html.push(`<h3>${t.docs}</h3>`);
+  for (const d of c.docs) html.push(`<div class="doc"><span>📄 ${esc(d.title)}</span><a href="#" data-doc="${esc(d.file)}">${t.openPdf}</a></div>`);
+  for (const n of c.notes) html.push(`<details data-note="${esc(n.file)}"><summary>📝 ${esc(n.title)}</summary><div class="note">…</div></details>`);
+  if (boardInfo.kbShelf) html.push(`<p class="hint" style="margin-top:12px"><a href="/kb/?q=${encodeURIComponent(boardInfo.kbShelf)}">${esc(t.inKb(boardInfo.kbShelf))} →</a></p>`);
+  $("dContent").innerHTML = html.join("");
+}
+$("dContent").addEventListener("click", async e => {
+  const a = e.target.closest("[data-doc]"); if (!a) return;
+  e.preventDefault();
+  // The PDF comes through the API (it needs the token), then opens as a blob.
+  const r = await fetch(`/api/lab/board/doc?file=${encodeURIComponent(a.dataset.doc)}`, { headers: { "x-token": web.token } });
+  if (!r.ok) { toast((await r.json().catch(() => ({}))).error || t.notDownloaded); return; }
+  window.open(URL.createObjectURL(await r.blob()), "_blank");
+});
+$("dContent").addEventListener("toggle", async e => {
+  const d = e.target; if (!d.open || !d.dataset.note || d.dataset.loaded) return;
+  d.dataset.loaded = "1";
+  try { const r = await api(`/board/note?file=${encodeURIComponent(d.dataset.note)}`); d.querySelector(".note").innerHTML = markdown(r.text); }
+  catch (err) { d.querySelector(".note").textContent = err.message; }
+}, true);
+$("boardSel").onchange = async e => {
+  try { await api("/board", { id: e.target.value }); await loadBoard(); await status(); } catch (err) { toast(err.message); }
+};
+$("boardBtn").onclick = () => { const open = $("drawer").hidden; $("drawer").hidden = !open; $("boardBtn").classList.toggle("on", open); if (open) loadBoard(); };
+$("dClose").onclick = () => { $("drawer").hidden = true; $("boardBtn").classList.remove("on"); };
 
 // ---- status and controls ----
 function showState(state) {

@@ -19,6 +19,7 @@ export type PortState = "stopped" | "waiting" | "open" | "released";
 export interface HubOptions {
   python: string;
   script: string;
+  baud?: number;
   /** Extra arguments for the script (tests). */
   scriptArgs?: string[];
   port: string;
@@ -34,9 +35,12 @@ export interface HubOptions {
 
 type Waiter = { resolve: () => void };
 
+/** Line numbers run on across hubs, so a page following one port keeps going after a switch to another port or baud. */
+let nextLine = 1;
+
 export class SerialHub {
   private lines: LogLine[] = [];
-  private next = 1;
+
   private partial = "";
   private partialTimer?: NodeJS.Timeout;
   private child?: ChildProcess;
@@ -61,13 +65,16 @@ export class SerialHub {
 
   get port() { return this.opts.port; }
 
+  get baud() { return this.opts.baud ?? 115200; }
+
   /** Lines after `n` (0 for everything kept). */
   since(n: number): LogLine[] {
     const first = this.lines.findIndex(l => l.n > n);
     return first < 0 ? [] : this.lines.slice(first);
   }
 
-  get lastN() { return this.next - 1; }
+  /** The last line number this hub has, or the last given out anywhere when it has none yet. */
+  get lastN() { return this.lines.at(-1)?.n ?? nextLine - 1; }
 
   onLine(fn: (line: LogLine) => void): () => void {
     this.listeners.push(fn);
@@ -76,7 +83,7 @@ export class SerialHub {
 
   /** Wait until there are lines after `n`, or the time is up or the request goes away. */
   async wait(n: number, ms: number, signal?: AbortSignal): Promise<LogLine[]> {
-    if (this.lastN > n) return this.since(n);
+    if ((this.lines.at(-1)?.n ?? 0) > n) return this.since(n);
     await new Promise<void>(resolve => {
       const waiter: Waiter = { resolve };
       const done = () => { clearTimeout(timer); this.waiters = this.waiters.filter(w => w !== waiter); resolve(); };
@@ -186,7 +193,7 @@ export class SerialHub {
 
   private ensure(): void {
     if (this.child) return;
-    const child = spawn(this.opts.python, [this.opts.script, ...(this.opts.scriptArgs ?? []), "--port", this.opts.port], { stdio: ["pipe", "pipe", "ignore"] });
+    const child = spawn(this.opts.python, [this.opts.script, ...(this.opts.scriptArgs ?? []), "--port", this.opts.port, "--baud", String(this.baud)], { stdio: ["pipe", "pipe", "ignore"] });
     this.child = child;
     this.state = "waiting";
     let buf = "";
@@ -249,7 +256,7 @@ export class SerialHub {
 
   private push(text: string, kind: LogLine["kind"]): LogLine {
     // ESP-IDF colours its log lines; the colours are noise for the model and the page colours by level itself.
-    const line: LogLine = { n: this.next++, ts: Date.now(), text: text.replace(/\x1b\[[0-9;]*m/g, ""), kind };
+    const line: LogLine = { n: nextLine++, ts: Date.now(), text: text.replace(/\x1b\[[0-9;]*m/g, ""), kind };
     this.lines.push(line);
     const keep = this.opts.keep ?? 20_000;
     if (this.lines.length > keep) this.lines.splice(0, this.lines.length - keep);

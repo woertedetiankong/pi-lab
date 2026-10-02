@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { SerialHub } from "../src/serial-hub.ts";
 
 const fake = join(import.meta.dirname, "fixtures", "fake-broker.mjs");
-const hub = (idleMs = 30_000) => new SerialHub({ python: process.execPath, script: fake, port: "/dev/fake", idleMs });
+// Every hub a test makes is stopped at the end, even when an assertion fails first.
+const made: SerialHub[] = [];
+after(() => { for (const h of made) h.stop(); });
+const hub = (idleMs = 30_000) => { const h = new SerialHub({ python: process.execPath, script: fake, port: "/dev/fake", idleMs }); made.push(h); return h; };
 
 test("a capture after reset joins split lines and stops at the pattern", async () => {
   const h = hub();
@@ -60,6 +63,7 @@ test("markers and listeners", async () => {
 test("a boot that stops at the bootloader's hand-off is recovered once", async () => {
   let recovered = 0;
   const h = new SerialHub({ python: process.execPath, script: fake, scriptArgs: ["--stall-first"], port: "/dev/fake", recover: async () => { recovered++; } });
+  made.push(h);
   const lines = await h.capture({ seconds: 8, until: /app: ready/ });
   h.stop();
   const text = lines.map(l => l.text);
@@ -71,7 +75,20 @@ test("a boot that stops at the bootloader's hand-off is recovered once", async (
 test("a normal boot is left alone", async () => {
   let recovered = 0;
   const h = new SerialHub({ python: process.execPath, script: fake, port: "/dev/fake", recover: async () => { recovered++; } });
+  made.push(h);
   await h.capture({ seconds: 3, until: /app: ready/ });
   h.stop();
   assert.equal(recovered, 0);
+});
+
+test("line numbers run on from one hub to the next", async () => {
+  const a = hub();
+  a.mark("first hub");
+  const last = a.lastN;
+  a.stop();
+  const b = hub();
+  assert.equal(b.lastN, last, "a new hub starts where the last one left off");
+  const line = b.mark("second hub");
+  assert.equal(line.n, last + 1);
+  assert.deepEqual(b.since(last).map(l => l.text), ["second hub"]);
 });

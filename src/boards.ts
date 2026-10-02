@@ -2,10 +2,11 @@
 // buses, quirks, the datasheets it uses) and notes/ (verified lessons, in pi-kb's note format).
 // The structured part shapes the prompt; datasheets and notes go to pi-kb when it is installed.
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { readLabConfig, updateLabConfig } from "./project-config.ts";
 
 export interface BoardPack {
   id: string;
@@ -47,16 +48,11 @@ const hex = (s: string) => Number(s).toString(16).padStart(4, "0");
 
 /** The board chosen for a project, kept in .pi/lab.json at the project root. */
 export function projectBoard(root: string): string | undefined {
-  try { return JSON.parse(readFileSync(join(root, ".pi", "lab.json"), "utf8")).board; } catch { return undefined; }
+  return readLabConfig(root).board;
 }
 
 export function setProjectBoard(root: string, id: string | undefined): void {
-  const file = join(root, ".pi", "lab.json");
-  let config: Record<string, unknown> = {};
-  try { config = JSON.parse(readFileSync(file, "utf8")); } catch {}
-  if (id) config.board = id; else delete config.board;
-  mkdirSync(dirname(file), { recursive: true });
-  writeFileSync(file, JSON.stringify(config, null, 2) + "\n");
+  updateLabConfig(root, { board: id });
 }
 
 /** What the model is told about the board: short, with where each fact came from when it was not measured. */

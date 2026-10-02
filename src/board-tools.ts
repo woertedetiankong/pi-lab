@@ -9,6 +9,7 @@ import { Type } from "typebox";
 import { buildErrors, findPorts, flashFailure, projectKind, type Run, serialPython, shellQuote, toolchainPrefix } from "./board.ts";
 import { crashAddresses, elfInfo, formatFrames } from "./crash.ts";
 import { foldText } from "./fold.ts";
+import { DEFAULT_BAUD, readLabConfig, updateLabConfig } from "./project-config.ts";
 import { type LogLine, SerialHub } from "./serial-hub.ts";
 
 const assets = fileURLToPath(new URL("../assets/", import.meta.url));
@@ -16,12 +17,30 @@ const SERIAL_FOLD = { keepRecent: 0, minLines: 150, head: 25, tail: 40, notable:
 
 const text = (t: string) => ({ content: [{ type: "text" as const, text: t }], details: undefined });
 
+export interface SerialChoice {
+  /** The port to use; undefined means the first board found. */
+  port?: string;
+  baud: number;
+}
+
 export interface BoardAccess {
-  /** The serial hub for a port (the first board found when left out); undefined without a board or pyserial. */
+  /** The serial hub for a port (the chosen one, else the first board found); undefined without a board or pyserial. */
   hub(port?: string): Promise<SerialHub | undefined>;
+  /** The project's port and baud, and the ports connected now. */
+  serial(): SerialChoice & { ports: string[]; using?: string };
+  /** Change the port (null: back to the first board found) and baud, for this project. */
+  select(choice: { port?: string | null; baud?: number }): Promise<void>;
   /** Hubs started so far. */
   hubs(): SerialHub[];
   reenumerate(): Promise<string>;
+}
+
+/** Text received at the wrong baud rate: mostly replacement characters and control bytes. */
+export function looksGarbled(lines: LogLine[]): boolean {
+  const text = lines.filter(l => l.kind === "out").map(l => l.text).join("");
+  if (text.length < 24) return false;
+  const bad = [...text].filter(c => c === "\uFFFD" || (c < " " && c !== "\t")).length;
+  return bad / text.length > 0.2;
 }
 
 /** Lines as the model reads them: pi-lab's markers in brackets. */
@@ -33,6 +52,8 @@ export function registerBoardTools(pi: ExtensionAPI, hooks: {
   downloadModeHint?: () => string | undefined;
   /** The project directory, for its build output (crash decoding). */
   cwd: () => string;
+  /** The project root, where .pi/lab.json keeps the serial port and baud. */
+  root: () => string;
 }): BoardAccess {
   const run: Run = async (command, args, options) => {
     const r = await pi.exec(command, args, { cwd: options?.cwd, timeout: options?.timeout });
@@ -46,9 +67,16 @@ export function registerBoardTools(pi: ExtensionAPI, hooks: {
     return python;
   };
 
+  const choice = (): SerialChoice => {
+    const saved = readLabConfig(hooks.root()).serial ?? {};
+    return { port: saved.port, baud: saved.baud && saved.baud > 0 ? saved.baud : DEFAULT_BAUD };
+  };
   const choosePort = (requested?: string) => {
     if (requested) return requested;
     const ports = findPorts();
+    // A chosen port that is not connected now (its name changes with the USB socket) falls back to the first found.
+    const chosen = choice().port;
+    if (chosen && ports.includes(chosen)) return chosen;
     if (!ports.length) throw new Error("No board found: no USB serial port is connected. Ask the user to plug the board in.");
     return ports[0]!;
   };
@@ -75,11 +103,13 @@ export function registerBoardTools(pi: ExtensionAPI, hooks: {
   const hubFor = async (requested?: string): Promise<SerialHub | undefined> => {
     let port: string;
     try { port = choosePort(requested); } catch { return undefined; }
+    const baud = choice().baud;
     const existing = hubs.get(port);
-    if (existing) return existing;
+    if (existing && existing.baud === baud) return existing;
+    if (existing) { existing.stop(); hubs.delete(port); }
     const py = await serialTool();
     if (!py) return undefined;
-    const hub = new SerialHub({ python: py, script: join(assets, "serial_broker.py"), port, recover: reenumerate, annotate: decodeCrash });
+    const hub = new SerialHub({ python: py, script: join(assets, "serial_broker.py"), port, baud, recover: reenumerate, annotate: decodeCrash });
     hubs.set(port, hub);
     return hub;
   };
@@ -115,9 +145,11 @@ export function registerBoardTools(pi: ExtensionAPI, hooks: {
       seconds: Type.Optional(Type.Number({ minimum: 1, maximum: 120, description: "How long to capture (default 8)" })),
       reset: Type.Optional(Type.Boolean({ description: "Reset the board first (default true). false reads what it prints now" })),
       until: Type.Optional(Type.String({ description: "Stop early once a line matches this regular expression, e.g. 'Guru Meditation|boot_count='" })),
-      port: Type.Optional(Type.String({ description: "Serial port; found automatically when left out" })),
+      port: Type.Optional(Type.String({ description: "Serial port; the project's chosen port, or found automatically, when left out" })),
+      baud: Type.Optional(Type.Integer({ minimum: 300, description: "Baud rate, when the firmware's differs from the project's setting (saved for the project). Native USB ports (ESP32-S3, ESP32-C3 USB-Serial/JTAG) ignore it" })),
     }),
     async execute(_id, params, signal) {
+      if (params.baud && params.baud !== choice().baud) await select({ baud: params.baud });
       const hub = await needHub(params.port);
       const seconds = params.seconds ?? 8;
       const options = { seconds, reset: params.reset !== false, until: params.until ? new RegExp(params.until) : undefined, signal };
@@ -139,7 +171,8 @@ export function registerBoardTools(pi: ExtensionAPI, hooks: {
       mkdirSync(join(file, ".."), { recursive: true });
       writeFileSync(file, log);
       const shown = foldText(log, SERIAL_FOLD) ?? log;
-      return text(`Serial log from ${hub.port} (${options.reset ? "after reset" : "no reset"}, ${lines.length} lines, full log in ${file}):${note}\n${shown}`);
+      if (looksGarbled(lines)) note += `\n[pi-lab: most of this is unreadable: the baud rate (${hub.baud}) probably does not match the firmware's. Try the firmware's rate with the baud parameter.]`;
+      return text(`Serial log from ${hub.port} at ${hub.baud} baud (${options.reset ? "after reset" : "no reset"}, ${lines.length} lines, full log in ${file}):${note}\n${shown}`);
     },
   });
 
@@ -223,5 +256,21 @@ export function registerBoardTools(pi: ExtensionAPI, hooks: {
     },
   });
 
-  return { hub: hubFor, hubs: () => [...hubs.values()], reenumerate };
+  const serial = () => {
+    const ports = findPorts();
+    let using: string | undefined;
+    try { using = choosePort(); } catch {}
+    return { ...choice(), ports, using };
+  };
+  const select = async (next: { port?: string | null; baud?: number }) => {
+    const current = choice();
+    const port = next.port === null ? undefined : next.port ?? current.port;
+    const baud = next.baud && next.baud > 0 ? Math.round(next.baud) : current.baud;
+    const saved = { ...(port ? { port } : {}), ...(baud !== DEFAULT_BAUD ? { baud } : {}) };
+    updateLabConfig(hooks.root(), { serial: Object.keys(saved).length ? saved : undefined });
+    // Hubs on other ports or at the old baud are not wanted any more; the next use opens the right one.
+    for (const [p, hub] of hubs) if (p !== (port ?? serial().using) || hub.baud !== baud) { hub.stop(); hubs.delete(p); }
+  };
+
+  return { hub: hubFor, hubs: () => [...hubs.values()], reenumerate, serial, select };
 }

@@ -2,7 +2,7 @@
 
 给 [pi](https://pi.dev/) 用的嵌入式调试插件：让 agent 可靠地烧录和读取开发板，不改动项目以外的工具链，并在长时间调试中记住试过什么。
 
-> 早期版本（v0.3.0）。目前在 ESP32-S3（M5StickS3）上实测；板级工具支持 ESP-IDF 和 PlatformIO 项目，USB 自动恢复仅支持 macOS。
+> 早期版本（v0.3.1）。目前在 ESP32-S3（M5StickS3）上实测；板级工具支持 ESP-IDF 和 PlatformIO 项目，USB 自动恢复仅支持 macOS。
 
 ![板子面板：M5StickS3 的 BMI270 加速度计实时曲线和串口日志](docs/panel.png)
 
@@ -16,6 +16,7 @@
    - 实时串口日志：时间戳、按 ESP-IDF 日志级别着色、过滤；复位、烧录在日志里显示为分隔线。
    - **曲线**：日志里的 `名称=数值`（`fps=50`、`temp: 21.5`、`|a|=0.997`）自动画成曲线；启动阶段的地址、时钟等参数不画；只出现一两次的值默认隐藏。点曲线上的点跳到对应的日志行。
    - **问 pi**：点选几行日志（Shift 连选、⌘/Ctrl 多选），写个问题，点「问 pi」，这几行和时间一起发给终端里的 agent；agent 正忙时排在当前任务之后。
+   - **串口和波特率**：顶部选择看哪个串口（默认「自动」：最近插上的那块板子）和波特率（9600～2000000），按项目保存在 `.pi/lab.json`；指定的串口拔掉后自动回到「自动」。收到的内容大部分是乱码时，提示波特率可能不对，点一下换成常用的波特率。ESP32-S3/C3 的原生 USB 不受波特率影响。
    - 复位板子、恢复 USB、**释放串口**（让你自己的工具或 IDE 用串口，再点一下取回）。
    - pi-lab 通过一个串口中枢独占串口，网页、`board_serial`、`board_flash` 共用：烧录时自动让出、烧完取回；agent 用 bash 跑烧录、`idf.py monitor`、esptool 或自己的串口脚本时，也会先让出串口，不会遇到「端口被占用」。没有网页在看、也没有工具在读时，串口会释放。
 3. **崩溃自动解码**：串口里出现 ESP-IDF 的 `Backtrace:`、`abort() was called at PC …` 或寄存器转储的 PC 时，用项目 `build/` 里的 ELF 和 addr2line 翻译成函数和源码行（`↳ store_sample at main/main.c:14`），插在日志里；网页上高亮，`board_serial` 返回给 agent 的结果里也有。
@@ -56,6 +57,7 @@
 | 命令 | 作用 |
 | --- | --- |
 | `/lab web` | 在浏览器打开板子面板（`/lab web url` 只显示地址，`/lab web stop` 关闭网页服务） |
+| `/lab serial [串口 \| auto \| 波特率]` | 查看或设置这个项目的串口和波特率，例如 `/lab serial 9600`、`/lab serial auto` |
 | `/lab` | 查看账本和固件同步状态 |
 | `/lab target <描述>` | 设置目标板，例如 `/lab target STM32F407 on /dev/ttyUSB0` |
 | `/lab flashed` | 在 pi 之外烧录后（IDE、图形烧录工具），手动标记为已同步 |

@@ -5,6 +5,7 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import type { BoardAccess } from "./board-tools.ts";
 import { type WebApp, webError, type WebLanguage, type WebRequest } from "./hub.ts";
+import { BAUDS } from "./project-config.ts";
 import type { LogLine } from "./serial-hub.ts";
 
 export interface PanelSession {
@@ -39,7 +40,21 @@ export class LabApp implements WebApp {
     const hub = await this.board.hub();
     const route = `${req.method} ${req.path}`;
     if (route === "GET /state") {
-      return { port: hub?.port, state: hub ? (this.paused ? "paused" : hub.state) : "no-board", detail: hub?.detail, ...this.session?.status() };
+      const serial = this.board.serial();
+      return { port: hub?.port, baud: hub?.baud ?? serial.baud, state: hub ? (this.paused ? "paused" : hub.state) : "no-board", detail: hub?.detail,
+        serial: { chosen: serial.port ?? null, ports: serial.ports, bauds: BAUDS }, ...this.session?.status() };
+    }
+    if (route === "POST /select") {
+      const body = await req.json();
+      const baud = body.baud === undefined ? undefined : Number(body.baud);
+      if (baud !== undefined && !(baud >= 300 && baud <= 10_000_000)) throw webError(400, "Invalid baud rate / 波特率无效");
+      this.paused?.();
+      this.paused = undefined;
+      await this.board.select({ port: body.port === undefined ? undefined : body.port || null, baud });
+      const next = await this.board.hub();
+      next?.mark(`serial: ${next.port} at ${next.baud} baud`);
+      next?.viewed();
+      return { ok: true };
     }
     if (!hub) throw webError(404, "No board connected / 没有连接板子");
 

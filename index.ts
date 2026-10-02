@@ -3,7 +3,8 @@ import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { Type } from "typebox";
 import { compare, describeFirmware, FLASH_ENTRY, type FirmwareState, firmwareStatus, type FlashRecord, isFirmwareFile, isFlashCommand, sourceState, usesPort } from "./src/firmware.ts";
-import { usbIds } from "./src/board.ts";
+import { findPorts, usbIds } from "./src/board.ts";
+import { BAUDS } from "./src/project-config.ts";
 import { registerBoardTools } from "./src/board-tools.ts";
 import { BOARD_EVENT, type BoardEvent, type BoardPack, candidates, describePack, docsDir, ensureDocs, loadPacks, notePaths, projectBoard, setProjectBoard } from "./src/boards.ts";
 import { foldLogs } from "./src/fold.ts";
@@ -110,15 +111,16 @@ export default function piLab(pi: ExtensionAPI): void {
     pi.events?.emit(BOARD_EVENT, event);
   };
 
-  const board = registerBoardTools(pi, {
+  const board_ = registerBoardTools(pi, {
     flashed: recordFlash,
     downloadModeHint: () => pack?.buttons ? `The board is in download mode. ${pack.buttons}` : undefined,
     cwd: () => projectDir,
+    root: () => projectRoot(projectDir),
   });
 
   // The board panel on the shared pi-web page (/lab/), next to pi-kb's and pi-sessions' pages.
   const web = () => sharedHub(getAgentDir());
-  const panel = new LabApp(board);
+  const panel = new LabApp(board_);
 
   pi.on("session_start", async (_event, ctx) => {
     restore(ctx);
@@ -146,7 +148,7 @@ export default function piLab(pi: ExtensionAPI): void {
   const lentFor = new Map<string, (() => void)[]>();
   const lendPort = async (toolCallId: string, toolName: string, input: Record<string, unknown>) => {
     if (toolName !== "bash" || typeof input.command !== "string" || !usesPort(input.command)) return;
-    const giveBacks = await Promise.all(board.hubs().map(h => h.lend()));
+    const giveBacks = await Promise.all(board_.hubs().map(h => h.lend()));
     if (giveBacks.length) lentFor.set(toolCallId, giveBacks);
   };
 
@@ -204,7 +206,9 @@ export default function piLab(pi: ExtensionAPI): void {
     const board = pack ? describePack(pack, kbShelf
       ? `with this board's verified notes, on the knowledge base shelf "${kbShelf}" (kb_search)`
       : `in ${docsDir(pack)}, and verified notes in ${join(pack.dir, "notes")}`) : undefined;
-    event.systemPromptOptions.sections.pi_lab = [...GUIDELINES, ...(board ? ["", board] : []), "", "Debug ledger:", state || "(empty: set the target and add what you know)"].join("\n");
+    const serial = board_.serial();
+    const serialLine = serial.using ? `Serial: ${serial.using} at ${serial.baud} baud (the project's setting; the user can change it in the board panel).` : "Serial: no board connected.";
+    event.systemPromptOptions.sections.pi_lab = [...GUIDELINES, "", serialLine, ...(board ? ["", board] : []), "", "Debug ledger:", state || "(empty: set the target and add what you know)"].join("\n");
   });
 
   // The agent changed firmware and is about to stop without flashing: whatever it concluded is untested on the board.
@@ -256,15 +260,31 @@ export default function piLab(pi: ExtensionAPI): void {
   });
 
   pi.registerCommand("lab", {
-    description: "Board panel, debug ledger, firmware sync: [web [url | stop] | show | flashed | target <text> | clear | board [id | none]]",
+    description: "Board panel, serial port, debug ledger, firmware sync: [web [url | stop] | serial [port | auto | baud] | show | flashed | target <text> | clear | board [id | none]]",
     getArgumentCompletions: prefix => {
       const [first, second] = prefix.split(/\s+/);
       if (first === "board" && second !== undefined) return [...packs.map(p => p.id), "none"].filter(id => id.startsWith(second)).map(id => ({ value: `board ${id}`, label: id }));
       if (first === "web" && second !== undefined) return ["url", "stop"].filter(s => s.startsWith(second)).map(s => ({ value: `web ${s}`, label: s }));
-      return ["web", "show", "flashed", "target", "clear", "board"].filter(s => s.startsWith(prefix)).map(s => ({ value: s, label: s }));
+      if (first === "serial" && second !== undefined) return [...findPorts(), "auto", ...BAUDS.map(String)].filter(s => s.startsWith(second)).map(s => ({ value: `serial ${s}`, label: s }));
+      return ["web", "serial", "show", "flashed", "target", "clear", "board"].filter(s => s.startsWith(prefix)).map(s => ({ value: s, label: s }));
     },
     handler: async (args, ctx) => {
       const [command = "show", ...rest] = args.trim().split(/\s+/);
+      if (command === "serial") {
+        const arg = rest[0];
+        if (arg) {
+          if (/^\d+$/.test(arg)) await board_.select({ baud: Number(arg) });
+          else if (arg === "auto") await board_.select({ port: null });
+          else await board_.select({ port: arg });
+        }
+        const s = board_.serial();
+        ctx.ui.notify([
+          `Serial for this project: ${s.port ?? "the first board found"} at ${s.baud} baud${s.using ? ` (now ${s.using})` : ""}.`,
+          `Ports: ${s.ports.join(", ") || "none"}`,
+          "Change with /lab serial <port | auto | baud>, or in the board panel (/lab web).",
+        ].join("\n"), "info");
+        return;
+      }
       if (command === "web") {
         if (rest[0] === "stop") { await web().close(); ctx.ui.notify("Stopped the pi-web page (shared with the other pi-web pages).", "info"); return; }
         web().mount(panel);

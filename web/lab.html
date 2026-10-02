@@ -52,6 +52,11 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 button:disabled { opacity: .5; cursor: default; }
 input[type=search], input[type=text] { font: inherit; font-size: 13px; color: var(--text); background: var(--bg); border: 1px solid var(--line-strong); border-radius: 7px; padding: 5px 9px; min-width: 0; }
 input[type=search] { width: 180px; }
+select { font: inherit; font-size: 13px; color: var(--text); background: var(--panel); border: 1px solid var(--line-strong); border-radius: 7px; padding: 4px 6px; max-width: 220px; }
+#portSel { font-family: var(--mono); font-size: 12px; }
+#garbled { display: none; padding: 8px 16px; background: var(--warn-soft); color: var(--text); font-size: 13px; border-bottom: 1px solid var(--line); }
+#garbled.show { display: block; }
+#garbled button { margin-left: 6px; padding: 2px 8px; font-size: 12px; }
 main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 #plotWrap { border-bottom: 1px solid var(--line); background: var(--panel); padding: 8px 16px 6px; }
 #plotWrap.hidden { display: none; }
@@ -90,6 +95,8 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 <body>
 <header>
   <div class="status"><span class="dot" id="dot"></span><span class="port" id="port">…</span><span class="meta" id="meta"></span></div>
+  <select id="portSel" title=""></select>
+  <select id="baudSel" title=""></select>
   <input type="search" id="filter">
   <button id="follow" class="on"></button>
   <button id="plotBtn" class="on"></button>
@@ -98,6 +105,7 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
   <button id="recover"></button>
   <button id="clear"></button>
 </header>
+<div id="garbled"></div>
 <main>
   <div id="plotWrap">
     <div id="plotTop"><div id="legend"></div><span id="windowLabel"></span>
@@ -119,12 +127,16 @@ const T = {
     plotEmpty: "日志里出现 名称=数值（例如 fps=50、temp: 21.5）时，这里会画出曲线", selected: n => `已选 ${n} 行`,
     question: "想问什么？（留空：这是什么意思，有问题就找原因）", ask: "问 pi", copy: "复制", copied: "已复制", asked: "已发给 pi，回到终端看回答",
     states: { open: "已连接", waiting: "等待板子…", released: "串口已释放", paused: "已释放给其他程序", stopped: "未连接", "no-board": "没有板子" },
+    portAuto: "串口：自动", portTip: "看哪个串口（拔插后名字可能会变，选「自动」最省心）", baudTip: "波特率：要和程序里设置的一致。ESP32-S3/C3 的原生 USB 不受影响", baud: n => `${n} 波特`,
+    garbled: b => `收到的内容大部分是乱码：波特率（${b}）可能和程序里设置的不一致。试试：`,
     firmware: { never: "本次会话还没烧录", synced: "固件与代码一致", stale: "⚠ 板子上的固件不是最新代码" }, window: "时间窗" },
   en: { title: "pi Board", filter: "Filter the log…", follow: "Follow", plot: "Plot", pause: "Release port", resume: "Take port back", reset: "Reset board", recover: "Recover USB", recoverTip: "When the board stops answering: a software unplug and replug", recovered: "USB re-enumerated", clear: "Clear",
     empty: "Waiting for the board… (pi holds the serial port while this page is open; Release port lets other programs use it)", noBoard: "No board found: plug in its USB cable",
     plotEmpty: "When the log prints name=value pairs (fps=50, temp: 21.5), they are plotted here", selected: n => `${n} line${n > 1 ? "s" : ""} selected`,
     question: "Your question (empty: what does this mean, and find the cause if it is a problem)", ask: "Ask pi", copy: "Copy", copied: "Copied", asked: "Sent to pi; the answer is in the terminal",
     states: { open: "connected", waiting: "waiting for the board…", released: "port released", paused: "released to other programs", stopped: "not connected", "no-board": "no board" },
+    portAuto: "Port: auto", portTip: "Which serial port to watch (names can change when you replug; auto is simplest)", baudTip: "Baud rate: must match the firmware's. Native USB on the ESP32-S3/C3 ignores it", baud: n => `${n} baud`,
+    garbled: b => `Most of what arrives is unreadable: the baud rate (${b}) probably does not match the firmware's. Try:`,
     firmware: { never: "not flashed in this session", synced: "firmware matches the code", stale: "⚠ the board runs older firmware than the code" }, window: "window" },
 };
 const web = window.piWeb || { token: new URLSearchParams(location.hash.slice(1)).get("token"), lang: "zh" };
@@ -337,6 +349,54 @@ function redraw() {
 setInterval(() => { if (plotDirty || Number($("window").value)) redraw(); }, 500);
 addEventListener("resize", () => redraw());
 
+// ---- port and baud ----
+$("portSel").title = t.portTip; $("baudSel").title = t.baudTip;
+let portKey = "";
+function showSerial(s) {
+  if (!s.serial) return;
+  const key = JSON.stringify([s.serial.ports, s.serial.chosen, s.port]);
+  if (key !== portKey && document.activeElement !== $("portSel")) {
+    portKey = key;
+    const sel = $("portSel"); sel.textContent = "";
+    const auto = new Option(`${t.portAuto}${!s.serial.chosen && s.port ? ` (${s.port.replace(/^\/dev\//, "")})` : ""}`, "");
+    sel.add(auto);
+    const ports = [...new Set([...s.serial.ports, ...(s.serial.chosen ? [s.serial.chosen] : [])])];
+    for (const p of ports) sel.add(new Option(p.replace(/^\/dev\//, ""), p));
+    sel.value = s.serial.chosen || "";
+  }
+  if (document.activeElement !== $("baudSel")) {
+    const sel = $("baudSel");
+    const bauds = [...new Set([...s.serial.bauds, s.baud])].sort((a, b) => a - b);
+    if (sel.options.length !== bauds.length) { sel.textContent = ""; for (const b of bauds) sel.add(new Option(t.baud(b), String(b))); }
+    sel.value = String(s.baud);
+  }
+  baudNow = s.baud;
+}
+async function choose(body) {
+  try { await api("/select", body); garbledSince = last; $("garbled").classList.remove("show"); portKey = ""; await status(); }
+  catch (err) { toast(err.message); }
+}
+$("portSel").onchange = e => choose({ port: e.target.value || null });
+$("baudSel").onchange = e => choose({ baud: Number(e.target.value) });
+
+// Text read at the wrong baud rate: replacement characters and control bytes.
+let baudNow = 115200, garbledSince = 0;
+function checkGarbled() {
+  const recent = [...lines.values()].filter(l => l.kind === "out" && l.n > garbledSince).slice(-40).map(l => l.text).join("");
+  if (recent.length < 24) return;
+  const bad = [...recent].filter(c => c === "\uFFFD" || (c < " " && c !== "\t")).length;
+  const show = bad / recent.length > 0.2;
+  const el = $("garbled");
+  if (show && !el.classList.contains("show")) {
+    el.textContent = t.garbled(baudNow);
+    for (const b of [115200, 9600, 74880, 460800, 921600].filter(b => b !== baudNow)) {
+      const btn = document.createElement("button"); btn.textContent = t.baud(b); btn.onclick = () => choose({ baud: b });
+      el.appendChild(btn);
+    }
+  }
+  el.classList.toggle("show", show);
+}
+
 // ---- status and controls ----
 function showState(state) {
   paused = state === "paused";
@@ -348,7 +408,8 @@ function showState(state) {
 async function status() {
   try {
     const s = await api("/state");
-    $("port").textContent = s.port || "—";
+    $("port").textContent = s.port ? `${s.port}` : "—";
+    showSerial(s);
     showState(s.state);
     const parts = [t.states[s.state] || s.state];
     if (s.board) parts.push(s.board);
@@ -371,6 +432,7 @@ async function poll() {
       for (const line of r.lines) { addRow(line); collect(line); last = Math.max(last, line.n); }
       if (r.lines.length) scrollDown();
       if (plotDirty) redraw();
+      if (r.lines.length) checkGarbled();
       showState(r.state);
     } catch (err) {
       if (err.status === 401) { $("empty").textContent = err.message; $("empty").style.display = "block"; return; }

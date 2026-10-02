@@ -70,7 +70,6 @@ Firmware sync needs the project to be a git repository; elsewhere that part is o
 ## Known issues
 
 - The ESP32-S3's native USB occasionally wedges as the app takes over the USB port at start-up (the log stops at the bootloader's `Disabling RNG early entropy source...`). After a reset, pi-lab detects this, re-enumerates the USB port and resets once more; otherwise use **Recover USB** in the panel or `board_recover`.
-- In one test, pi sat idle for 10 minutes around a `board_flash` call with no child process running; the cause is not known yet (possibly a stalled model request). If it happens, press Esc and try again.
 
 ## Benchmark
 

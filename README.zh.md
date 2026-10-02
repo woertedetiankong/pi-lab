@@ -46,7 +46,6 @@
 ## 已知问题
 
 - ESP32-S3 原生 USB 偶尔会在应用启动、接管 USB 时卡住（日志停在 bootloader 的 `Disabling RNG early entropy source...`）。pi-lab 复位后检测到这种情况会自动重新枚举 USB 再复位一次；其他时候用面板上的「恢复 USB」或 `board_recover`。
-- 一次测试中，pi 在调用 `board_flash` 前后空等了 10 分钟，没有子进程在运行，原因还没查明（可能是模型请求卡住）。遇到时按 Esc 中断后重试。
 
 ## 实测
 

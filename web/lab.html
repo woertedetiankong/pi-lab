@@ -11,7 +11,7 @@
   --text: #1f1f1c; --muted: #6d6c64; --faint: #9c9b92;
   --accent: #3d5afe; --accent-soft: #e8ecff; --accent-text: #2a3fc2;
   --ok: #2e9d6a; --warn: #b67c0e; --warn-soft: #fbf1dc; --danger: #d4453b; --danger-soft: #fbe7e5;
-  --select: #e8ecff; --mark: #f1f0ea;
+  --select: #d9e0ff; --mark: #f1f0ea;
   --r: 10px;
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI", sans-serif;
@@ -73,7 +73,12 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .row { display: flex; gap: 12px; padding: 0 16px; white-space: pre-wrap; word-break: break-word; cursor: default; }
 .row:hover { background: var(--bg); }
 .row .t { color: var(--faint); flex: none; user-select: none; }
-.row.sel { background: var(--select); }
+.row.sel { background: var(--select); box-shadow: inset 3px 0 0 var(--accent); }
+.row.sel:hover { background: var(--select); }
+#log.picking .row { user-select: none; cursor: pointer; }
+#log .row { cursor: pointer; }
+#latest { position: fixed; right: 24px; bottom: 76px; display: none; z-index: 4; box-shadow: 0 2px 10px rgba(0,0,0,.12); }
+#latest.show { display: block; }
 .row.E .x { color: var(--danger); } .row.W .x { color: var(--warn); } .row.D .x, .row.V .x { color: var(--faint); }
 .row.crash { background: var(--danger-soft); }
 .row.mark { color: var(--muted); background: var(--mark); margin: 4px 0; font-family: var(--sans); font-size: 12px; }
@@ -117,6 +122,7 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
   <div id="log"><div id="empty"></div></div>
 </main>
 <div id="askBar"><span class="count" id="selCount"></span><input type="text" id="question"><button id="copy"></button><button class="primary" id="ask"></button></div>
+<button id="latest"></button>
 <div id="tip"></div>
 <div id="toast"></div>
 <script>
@@ -124,7 +130,7 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 const T = {
   zh: { title: "pi 板子", filter: "过滤日志…", follow: "自动滚动", plot: "曲线", pause: "释放串口", resume: "取回串口", reset: "复位板子", recover: "恢复 USB", recoverTip: "板子没反应时：用软件拔插一次 USB", recovered: "USB 已重新连接", clear: "清空",
     empty: "等板子输出…（打开这个页面时，pi 会接管串口；点「释放串口」可以让其他程序使用）", noBoard: "没有找到板子：请插上 USB 线",
-    plotEmpty: "日志里出现 名称=数值（例如 fps=50、temp: 21.5）时，这里会画出曲线", selected: n => `已选 ${n} 行`,
+    plotEmpty: "日志里出现 名称=数值（例如 fps=50、temp: 21.5）时，这里会画出曲线", selected: n => `已选 ${n} 行`, latest: "↓ 回到最新", pickTip: "按住拖动可选多行，Shift 点击选一段，⌘ 点击加选",
     question: "想问什么？（留空：这是什么意思，有问题就找原因）", ask: "问 pi", copy: "复制", copied: "已复制", asked: "已发给 pi，回到终端看回答",
     states: { open: "已连接", waiting: "等待板子…", released: "串口已释放", paused: "已释放给其他程序", stopped: "未连接", "no-board": "没有板子" },
     portAuto: "串口：自动", portTip: "看哪个串口（拔插后名字可能会变，选「自动」最省心）", baudTip: "波特率：要和程序里设置的一致。ESP32-S3/C3 的原生 USB 不受影响", baud: n => `${n} 波特`,
@@ -132,7 +138,7 @@ const T = {
     firmware: { never: "本次会话还没烧录", synced: "固件与代码一致", stale: "⚠ 板子上的固件不是最新代码" }, window: "时间窗" },
   en: { title: "pi Board", filter: "Filter the log…", follow: "Follow", plot: "Plot", pause: "Release port", resume: "Take port back", reset: "Reset board", recover: "Recover USB", recoverTip: "When the board stops answering: a software unplug and replug", recovered: "USB re-enumerated", clear: "Clear",
     empty: "Waiting for the board… (pi holds the serial port while this page is open; Release port lets other programs use it)", noBoard: "No board found: plug in its USB cable",
-    plotEmpty: "When the log prints name=value pairs (fps=50, temp: 21.5), they are plotted here", selected: n => `${n} line${n > 1 ? "s" : ""} selected`,
+    plotEmpty: "When the log prints name=value pairs (fps=50, temp: 21.5), they are plotted here", selected: n => `${n} line${n > 1 ? "s" : ""} selected`, latest: "↓ Latest", pickTip: "Drag to select several lines, Shift-click for a range, ⌘-click to add",
     question: "Your question (empty: what does this mean, and find the cause if it is a problem)", ask: "Ask pi", copy: "Copy", copied: "Copied", asked: "Sent to pi; the answer is in the terminal",
     states: { open: "connected", waiting: "waiting for the board…", released: "port released", paused: "released to other programs", stopped: "not connected", "no-board": "no board" },
     portAuto: "Port: auto", portTip: "Which serial port to watch (names can change when you replug; auto is simplest)", baudTip: "Baud rate: must match the firmware's. Native USB on the ESP32-S3/C3 ignores it", baud: n => `${n} baud`,
@@ -191,12 +197,22 @@ function addRow(line) {
     el.remove(); rows.delete(n); lines.delete(n); selected.delete(n);
   }
 }
+function setFollow(on) {
+  follow = on;
+  $("follow").classList.toggle("on", follow);
+  $("latest").classList.toggle("show", !follow);
+  if (follow) log.scrollTop = log.scrollHeight;
+}
 function scrollDown() { if (follow) log.scrollTop = log.scrollHeight; }
+$("latest").textContent = t.latest;
+$("latest").onclick = () => setFollow(true);
+log.title = t.pickTip;
 log.addEventListener("scroll", () => {
+  // Scrolling up stops following; coming back to the bottom follows again, unless lines are being picked.
   const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 30;
-  if (follow !== atBottom) { follow = atBottom; $("follow").classList.toggle("on", follow); }
+  if (follow !== atBottom && !(atBottom && selected.size)) setFollow(atBottom);
 });
-$("follow").onclick = () => { follow = !follow; $("follow").classList.toggle("on", follow); scrollDown(); };
+$("follow").onclick = () => setFollow(!follow);
 $("filter").oninput = e => {
   filter = e.target.value.trim().toLowerCase();
   for (const [n, row] of rows) row.classList.toggle("hide", !!filter && !lines.get(n).text.toLowerCase().includes(filter));
@@ -209,19 +225,41 @@ function updateSelection() {
   $("askBar").classList.toggle("show", selected.size > 0);
   $("selCount").textContent = t.selected(selected.size);
 }
-log.addEventListener("click", e => {
-  const row = e.target.closest(".row"); if (!row) return;
-  if (window.getSelection().toString()) return;   // let the user select text to copy
+// Picking lines: press on a line and the log holds still; drag over more lines to take them too.
+// Shift extends from the last line picked, ⌘/Ctrl adds or removes one line.
+let drag = null;
+const rowAt = e => e.target.closest && e.target.closest(".row");
+log.addEventListener("mousedown", e => {
+  const row = rowAt(e); if (!row || e.button !== 0) return;
+  setFollow(false);
+  log.classList.add("picking");
   const n = Number(row.dataset.n);
-  if (e.shiftKey && anchor !== null) {
-    const [a, b] = [Math.min(anchor, n), Math.max(anchor, n)];
-    for (const k of rows.keys()) if (k >= a && k <= b && !rows.get(k).classList.contains("hide")) selected.add(k);
-  } else if (e.metaKey || e.ctrlKey) { selected.has(n) ? selected.delete(n) : selected.add(n); anchor = n; }
-  else { const only = selected.size === 1 && selected.has(n); selected.clear(); if (!only) selected.add(n); anchor = n; }
+  if (e.shiftKey && anchor !== null) { drag = { from: anchor, base: new Set(selected) }; extendTo(n); }
+  else if (e.metaKey || e.ctrlKey) { selected.has(n) ? selected.delete(n) : selected.add(n); anchor = n; drag = null; }
+  else {
+    const only = selected.size === 1 && selected.has(n);
+    selected.clear();
+    if (!only) selected.add(n);
+    anchor = n;
+    drag = only ? null : { from: n, base: new Set() };
+  }
   updateSelection();
+  e.preventDefault();   // no text selection while picking lines
 });
+function extendTo(n) {
+  const [a, b] = [Math.min(drag.from, n), Math.max(drag.from, n)];
+  selected.clear();
+  for (const k of drag.base) selected.add(k);
+  for (const [k, row] of rows) if (k >= a && k <= b && !row.classList.contains("hide")) selected.add(k);
+  updateSelection();
+}
+log.addEventListener("mouseover", e => { if (!drag) return; const row = rowAt(e); if (row) extendTo(Number(row.dataset.n)); });
+document.addEventListener("mouseup", () => { drag = null; log.classList.remove("picking"); });
 document.addEventListener("keydown", e => {
   if (e.key === "Escape") { selected.clear(); updateSelection(); }
+  if ((e.metaKey || e.ctrlKey) && e.key === "c" && selected.size && !window.getSelection().toString() && document.activeElement !== $("question")) {
+    navigator.clipboard.writeText(pickedText()).then(() => toast(t.copied)); e.preventDefault();
+  }
   if (e.key === "Enter" && document.activeElement === $("question")) $("ask").click();
 });
 const pickedText = () => [...selected].sort((a, b) => a - b).map(n => lines.get(n)).filter(Boolean).map(l => `${time(l.ts)}  ${l.text}`).join("\n");
@@ -335,7 +373,7 @@ canvas.addEventListener("mouseleave", () => { $("tip").style.display = "none"; }
 canvas.addEventListener("click", () => {
   // Jump to the line a point came from, and select it.
   const n = Number(canvas.dataset.n); const row = rows.get(n); if (!row) return;
-  follow = false; $("follow").classList.remove("on");
+  setFollow(false);
   row.classList.remove("hide"); row.scrollIntoView({ block: "center" });
   selected.clear(); selected.add(n); anchor = n; updateSelection();
 });

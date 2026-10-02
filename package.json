@@ -1,6 +1,6 @@
 {
   "name": "pi-lab",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Embedded debugging for pi: flash and read the board reliably, keep a debug ledger that survives compaction, track firmware sync, and guard the toolchain",
   "type": "module",
   "license": "MIT",

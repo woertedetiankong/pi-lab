@@ -1,0 +1,24 @@
+{
+  "scenario": "logger-reset",
+  "agent": "pi-lab-kb-note",
+  "docs": "full",
+  "model": "(default)",
+  "pass": true,
+  "detail": "the board kept running through two logger runs (t rose from 8007 to 20407 ms)",
+  "minutes": 3.9,
+  "exitCode": 0,
+  "toolCalls": 39,
+  "flashes": 0,
+  "serialCaptures": 13,
+  "ledgerCalls": 10,
+  "kbCalls": 3,
+  "boardCalls": 9,
+  "noteHits": 3,
+  "noteFirstMin": 0.1,
+  "tokens": {
+    "input": 19788,
+    "output": 12991
+  },
+  "costUsd": 0.025,
+  "finalText": "## Root cause\n\n`tools/logger.py` was resetting the board on every connect.\n\n`open_board()` lowered both control lines before opening the port:\n\n```python\ns.dtr = False\ns.rts = False   # the usual \"don't reset the ESP32\" advice\ns.open()\n```\n\nOn the ESP32-S3's native **USB-Serial/JTAG** port this is the opposite of safe. RTS high with DTR low asserts a chip reset, and pyserial drives DTR before RTS. So lowering both (whether before `open()` or after) passes through \"RTS high, DTR low\" and reboots the chip. The firmware itself is fine and was left untouched.\n\nMeasured on the board:\n- Unmodified logger: first CSV row `t_ms=16` — the board had just rebooted on connect.\n- Control (old two lines in a standalone script): first `t=16`.\n- Direct pyserial read before any logger run: `t=19007…21607` and climbing, so it was the logger's open that caused it.\n\n## Fix\n\nOnly `open_board()` in `tools/logger.py` changed — open with both lines high, then lower RTS **before** DTR, so the chip never sees the reset state:\n\n```python\ns.dtr = True\ns.rts = True\ns.open()\ns.rts = False\ns.dtr = False\n```\n\nThe command line (`--seconds 5 --out readings.csv`), the CSV columns (`t_ms,temp_c`), and the firmware are unchanged.\n\n## Verification on the board\n\nAfter a clean reset, several consecutive connect/disconnect cycles of the fixed logger:\n\n- 3 runs appended 61 rows to one CSV with `t_ms` strictly increasing `12207→23607` (no restart between runs).\n- 5 runs: 77 rows, strictly increasing `43207→58607`.\n- A direct pyserial read right after showed `t=36607…39407` still climbing, and a final read `t=12807…15607` — the board stays up across connects and disconnects.\n\nNote: `board_serial` sometimes printed \"No output\" after a host disconnect even though the board was running; a direct `serial.Serial(port, 115200)` read showed the stream continuing, so don't mistake that silence for a hang.\n\nChanged file: `tools/logger.py` (7 insertions, 3 deletions)."
+}

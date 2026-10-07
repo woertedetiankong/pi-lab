@@ -1,0 +1,23 @@
+{
+  "scenario": "logger-reset",
+  "agent": "pi-lab-kb",
+  "label": "port-fix",
+  "docs": "full",
+  "model": "(default)",
+  "pass": true,
+  "detail": "the board kept running through two logger runs (t rose from 8007 to 20407 ms)",
+  "minutes": 4.3,
+  "exitCode": 0,
+  "toolCalls": 40,
+  "flashes": 0,
+  "serialCaptures": 2,
+  "ledgerCalls": 8,
+  "kbCalls": 3,
+  "boardCalls": 2,
+  "tokens": {
+    "input": 46545,
+    "output": 26352
+  },
+  "costUsd": 0.0506,
+  "finalText": "Done. Here's the result.\n\n## Root cause\n\n`tools/logger.py`'s `open_board()` cleared the control lines before opening the port:\n\n```python\ns.dtr = False\ns.rts = False\ns.open()\n```\n\n`pyserial`'s `Serial.open()` applies **DTR first, then RTS**. On the M5StickS3 the console is the ESP32-S3 native **USB-Serial/JTAG** peripheral, and a **DTR falling edge (1→0) is what generates a chip reset**. So every time the logger connected, pyserial pulled DTR down and rebooted the board — which is why each CSV run restarted at `t≈0`. The comment \"Keep DTR and RTS low so that opening the port does not reset the ESP32\" was backwards for this peripheral.\n\nI confirmed it with probes (each open followed by a read, checking for the `ESP-ROM` boot banner):\n\n| DTR before open | RTS before open | result |\n|---|---|---|\n| False | False | **reset** (the bug) |\n| False | True | **reset** |\n| True | False | no reset |\n| True | True | no reset |\n\nOnly DTR going low matters; the \"(1,1) reset condition\" was ruled out.\n\n## Fix\n\nAssert the lines instead of clearing them, in `tools/logger.py` `open_board()`:\n\n```python\n# The board's USB-Serial/JTAG console resets the chip on a DTR falling edge, and pyserial's\n# open() applies DTR before RTS. Clearing DTR here therefore restarts the board; asserting both\n# lines before opening means the open produces no control-line transition.\ns.dtr = True\ns.rts = True\ns.open()\n```\n\nThe firmware, command line, and CSV format are unchanged.\n\n## Verification on the board\n\nTwo runs of `python tools/logger.py --seconds 5 --out readings.csv`, 4 s apart, appended to one continuous series:\n\n- run 1: `t=47607 … 52407`\n- run 2: `t=56607 … 61607` (52407 + ~4 s)\n\nThe board kept running across the disconnect — no boot banner, no restart. I also removed the temporary probe script I used for testing. The lesson is saved as a wiki note."
+}

@@ -1,0 +1,22 @@
+{
+  "scenario": "logger-reset",
+  "agent": "pi",
+  "docs": "full",
+  "model": "(default)",
+  "pass": true,
+  "detail": "the board kept running through two logger runs (t rose from 8007 to 20407 ms)",
+  "minutes": 2.9,
+  "exitCode": 0,
+  "toolCalls": 21,
+  "flashes": 0,
+  "serialCaptures": 6,
+  "ledgerCalls": 0,
+  "kbCalls": 0,
+  "boardCalls": 0,
+  "tokens": {
+    "input": 9113,
+    "output": 12782
+  },
+  "costUsd": 0.0193,
+  "finalText": "## Root cause\n\nThe M5StickS3 console runs on the ESP32‑S3 **USB Serial/JTAG** peripheral (`CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y`). That peripheral treats a **falling edge on DTR while RTS is asserted as a chip‑reset request** — it is exactly the sequence esptool's `USBJTAGSerialReset` uses to reset the chip.\n\n`tools/logger.py` did the opposite of what its comment claimed:\n\n```python\n# Keep DTR and RTS low so that opening the port does not reset the ESP32.\ns.dtr = False\ns.rts = False\n```\n\nDeasserting DTR on open generated that reset edge, so every cron run rebooted the board and `t` restarted near 0.\n\nI confirmed this on the hardware:\n- Opening with `dtr=False` → boot banner + `t` back near 0, every time.\n- Toggling DTR `True → False` while RTS was asserted while the port was already open → immediate reset.\n- `dtr=True` (default) → no reset; closing the port also did not reset.\n\n## Fix\n\nOnly `tools/logger.py` changed (`open_board`): keep DTR (and RTS) asserted for the whole session instead of driving them low, so no DTR falling edge is ever generated. Command line, regex, and CSV format are untouched. Firmware was not modified.\n\n```python\n# The ESP32-S3 USB Serial/JTAG peripheral resets the chip on a falling\n# edge of DTR while RTS is asserted ... Asserting DTR\n# and RTS and leaving them asserted for the whole session never generates\n# that edge ...\ns.dtr = True\ns.rts = True\n```\n\n## Verification on the board\n\nRan the logger back‑to‑back (as cron would):\n\n- 5 consecutive `--seconds 2` runs: `t` climbed monotonically `55007 → 73407` with no restart.\n- Two more `--seconds 5` runs: 52 rows, header still `t_ms,temp_c`, `t` strictly increasing `88407 → 99607`, no `t` value near 0 after the first row.\n\nThe board now stays running across logger connects/disconnects."
+}

@@ -1,0 +1,22 @@
+{
+  "scenario": "logger-reset",
+  "agent": "pi",
+  "docs": "full",
+  "model": "(default)",
+  "pass": true,
+  "detail": "the board kept running through two logger runs (t rose from 8007 to 20407 ms)",
+  "minutes": 2.6,
+  "exitCode": 0,
+  "toolCalls": 25,
+  "flashes": 0,
+  "serialCaptures": 3,
+  "ledgerCalls": 0,
+  "kbCalls": 0,
+  "boardCalls": 0,
+  "tokens": {
+    "input": 55151,
+    "output": 13511
+  },
+  "costUsd": 0.0377,
+  "finalText": "## Root cause\n\nThe board's console is the ESP32-S3's **USB Serial/JTAG** peripheral, not a USB-UART bridge. That peripheral interprets a deasserted **DTR** line as a chip-reset request.\n\n`tools/logger.py` was doing exactly that in `open_board()`:\n\n```python\n# Keep DTR and RTS low so that opening the port does not reset the ESP32.\ns.dtr = False\ns.rts = False\n```\n\nThe comment was backwards — lowering DTR is what reset the chip. Because the reset happens at port-open (before the logger can read anything), every cron run looked like a fresh boot, so `t` restarted near 0.\n\nI confirmed this directly on the device with isolated probes:\n- pre-setting `dtr=False` before opening → first sample `t=16` (board rebooted)\n- leaving DTR asserted / setting `dtr=True` → `t` continued from its prior value with no reboot (e.g. conn1 last `t=21607`, conn2 first `t=23207`)\n- `rts=False` alone did not reset; it is the DTR deassertion that triggers it.\n\n## What I changed\n\nIn `tools/logger.py`, `open_board()` now **asserts** DTR and RTS instead of deasserting them (and documents why):\n\n```python\ns.dtr = True\ns.rts = True\ns.open()\n```\n\nThe firmware, the command line, and the CSV format are unchanged.\n\n## Verification\n\nRan the logger three times back-to-back against the running board:\n\n```\nrun1: 11407 … 13207\nrun2: 14607 … 16407\nrun3: 17607 … 19607\n```\n\n`t` increases monotonically across separate attaches (only the normal gap between runs), so the board now keeps running while the logger connects and disconnects."
+}

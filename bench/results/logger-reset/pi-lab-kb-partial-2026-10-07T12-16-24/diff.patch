@@ -1,0 +1,19 @@
+diff --git a/tools/logger.py b/tools/logger.py
+index 017d4d7..867cde1 100644
+--- a/tools/logger.py
++++ b/tools/logger.py
+@@ -31,9 +31,11 @@ def default_port():
+ def open_board(port):
+     s = serial.Serial()
+     s.port, s.baudrate, s.timeout = port, 115200, 0.2
+-    # Keep DTR and RTS low so that opening the port does not reset the ESP32.
+-    s.dtr = False
+-    s.rts = False
++    # The M5StickS3 exposes the ESP32-S3's native USB-Serial/JTAG console, not a USB-UART bridge. On that port,
++    # driving DTR and RTS low is decoded by the chip as a reset request, so a connecting host must leave both
++    # lines asserted (high); otherwise every logger run restarts the firmware. Do not set them to False here.
++    s.dtr = True
++    s.rts = True
+     s.open()
+     return s
+ 

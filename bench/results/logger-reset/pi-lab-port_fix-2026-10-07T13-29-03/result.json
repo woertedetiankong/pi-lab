@@ -1,0 +1,24 @@
+{
+  "scenario": "logger-reset",
+  "agent": "pi-lab",
+  "label": "port-fix",
+  "docs": "full",
+  "model": "(default)",
+  "pass": true,
+  "detail": "the board kept running through two logger runs (t rose from 8007 to 20407 ms)",
+  "firstJudge": "the firmware prints no readings after a reset",
+  "minutes": 4.4,
+  "exitCode": 0,
+  "toolCalls": 43,
+  "flashes": 0,
+  "serialCaptures": 5,
+  "ledgerCalls": 14,
+  "kbCalls": 0,
+  "boardCalls": 5,
+  "tokens": {
+    "input": 56564,
+    "output": 22142
+  },
+  "costUsd": 0.0467,
+  "finalText": "Done. The fix is verified on the board.\n\n## Root cause\n\n`tools/logger.py:open_board()` explicitly drove the control lines low before opening:\n\n```python\ns.dtr = False\ns.rts = False\n```\n\nThat is the correct trick for a classic USB-UART auto-reset circuit, but this board's console is the ESP32-S3 **native USB-Serial/JTAG** peripheral, whose reset command is the control-line state **DTR=0, RTS=1**. pyserial applies the stored DTR then RTS during `open()`, so going from the driver default `(1,1)` to `(0,0)` passes through exactly `(DTR=0, RTS=1)` — which resets the chip. Every logger invocation therefore rebooted the board, and the CSV restarted at `t≈0` (occasionally it also wedged the USB port). Note the firmware is a red herring: it runs fine and its `t` clock is correct; only the host's open sequence resets it.\n\nI confirmed the mechanism with a control-line matrix (raw probe reading boot banners vs. `t` values):\n- `(dtr=0, rts=0)` → reset (`t=16`)\n- `(dtr=0, rts=1)` → reset (`t=16`)\n- `(dtr=1, rts=1)` → no reset\n- `(dtr=1, rts=0)` → no reset\n\n## What I changed\n\nOnly `tools/logger.py` (`open_board`), keeping the command line and CSV format identical. Instead of pulling the lines low, I leave them asserted — the USB-JTAG idle state — so neither open nor close emits a reset sequence:\n\n```python\ns.dtr = True\ns.rts = True\n```\n\n## Verification on the board\n\n- Unmodified logger: CSV began at `t=16` (reproduced twice), with the boot banner captured — the bug.\n- Fixed logger: four successive runs produced one continuous series `t = 79207 → 81807 → 86007 → 90407 → 113807 → 114207`, no reading below `t=2000`, and a raw probe right after showed `t=109207` with no boot banner. The board stayed up across connect/disconnect."
+}

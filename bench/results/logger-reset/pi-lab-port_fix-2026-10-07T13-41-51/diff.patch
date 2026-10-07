@@ -1,0 +1,20 @@
+diff --git a/tools/logger.py b/tools/logger.py
+index 017d4d7..f8bbb01 100644
+--- a/tools/logger.py
++++ b/tools/logger.py
+@@ -31,9 +31,12 @@ def default_port():
+ def open_board(port):
+     s = serial.Serial()
+     s.port, s.baudrate, s.timeout = port, 115200, 0.2
+-    # Keep DTR and RTS low so that opening the port does not reset the ESP32.
+-    s.dtr = False
+-    s.rts = False
++    # The ESP32-S3 console is its native USB-Serial/JTAG peripheral. Dropping DTR (pyserial
++    # `dtr = False`) toggles the control line that this peripheral treats as a reset request, so
++    # the firmware would restart every time the logger connects. Keep DTR (and RTS) asserted;
++    # opening/closing the port then leaves the board running.
++    s.dtr = True
++    s.rts = True
+     s.open()
+     return s
+ 

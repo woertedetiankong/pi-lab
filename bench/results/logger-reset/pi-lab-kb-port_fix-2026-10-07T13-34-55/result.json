@@ -1,0 +1,23 @@
+{
+  "scenario": "logger-reset",
+  "agent": "pi-lab-kb",
+  "label": "port-fix",
+  "docs": "full",
+  "model": "(default)",
+  "pass": true,
+  "detail": "the board kept running through two logger runs (t rose from 8007 to 20407 ms)",
+  "minutes": 5.9,
+  "exitCode": 0,
+  "toolCalls": 43,
+  "flashes": 1,
+  "serialCaptures": 3,
+  "ledgerCalls": 9,
+  "kbCalls": 2,
+  "boardCalls": 2,
+  "tokens": {
+    "input": 73039,
+    "output": 27862
+  },
+  "costUsd": 0.0645,
+  "finalText": "## Root cause\n\nThe reset was caused by `tools/logger.py`, not the firmware. The board's console is on the ESP32‑S3 **USB Serial/JTAG** peripheral, whose hardware treats a **falling DTR edge while RTS is still asserted** as a chip-reset command (the same signal esptool uses: its `USBJTAGSerialReset` ends with RTS=1/DTR=0 to reset, then releases RTS).\n\n`open_board()` did:\n\n```python\ns.dtr = False\ns.rts = False\ns.open()\n```\n\nBut **pyserial's `open()` applies DTR before RTS**, so the open itself deasserted DTR while RTS was still asserted — generating the reset pulse. The comment \"keep DTR and RTS low so opening does not reset\" was exactly backwards in effect.\n\nI confirmed this on the hardware with a probe (2 identical repetitions, reading DTR/RTS back via `TIOCMGET`): a reset occurs **only** when DTR is dropped while RTS=1 (pre-set `dtr=False,rts=False`, or post-open `dtr=False` alone); dropping RTS first, or leaving DTR alone, never resets. Before the fix, `logger.py`'s first CSV row was `t=16, 207, 407…`.\n\n## Fix (`tools/logger.py`, `open_board` only)\n\n```python\ns.open()\ns.rts = False\ns.dtr = False\n```\n\npyserial's `open()` on its own does not reset the board; only the pre-open assignment did. Command line, port, baud and CSV format are unchanged, and the firmware was not touched.\n\n## Verification on the board\n\nThree consecutive `python tools/logger.py --seconds 3 --out /tmp/append.csv` runs appended a strictly monotonic series — `t` from 61807 to 70807 ms, zero decreases, no reset. (For comparison, the old code reset on every connect.)\n\nThe knowledge base has nothing on the ESP32‑S3; I saved the lesson as an unreviewed wiki note (`w-4df0e0ec6065`) so it can be reused."
+}

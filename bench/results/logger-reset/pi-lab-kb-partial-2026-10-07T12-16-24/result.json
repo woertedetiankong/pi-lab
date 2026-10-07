@@ -1,0 +1,25 @@
+{
+  "scenario": "logger-reset",
+  "agent": "pi-lab-kb-partial",
+  "docs": "full",
+  "model": "(default)",
+  "pass": true,
+  "detail": "the board kept running through two logger runs (t rose from 8007 to 20407 ms)",
+  "firstJudge": "the firmware prints no readings after a reset",
+  "minutes": 4.5,
+  "exitCode": 0,
+  "toolCalls": 40,
+  "flashes": 1,
+  "serialCaptures": 8,
+  "ledgerCalls": 9,
+  "kbCalls": 3,
+  "boardCalls": 6,
+  "noteHits": 3,
+  "noteFirstMin": 0.1,
+  "tokens": {
+    "input": 58150,
+    "output": 21641
+  },
+  "costUsd": 0.0475,
+  "finalText": "## Root cause\n\nThe M5StickS3 has no USB-UART bridge: its console is the ESP32-S3's **native USB-Serial/JTAG** port. On that port the DTR/RTS control lines are decoded by the chip as commands, and driving **both low, `(DTR,RTS)=(0,0)`, is decoded as a chip-reset request**.\n\n`tools/logger.py`'s `open_board()` did exactly that, with a comment saying the opposite:\n\n```python\n# Keep DTR and RTS low so that opening the port does not reset the ESP32.\ns.dtr = False\ns.rts = False\n```\n\nSo every time cron connected, the chip reset — the next boot banner (`rst:0x15 (USB_UART_CHIP_RESET)`) and `t` starting at ~16 ms are what appeared in the CSV. The firmware was fine; the logger was resetting the board.\n\nEvidence: opening the port exactly as `open_board()` did printed `ESP-ROM:esp32s3-20210327 … rst:0x15 (USB_UART_CHIP_RESET)` and readings from `t=16`. Every variant that left the lines asserted (default open, explicit `True`, raw `os.open`) showed no banner.\n\n## Fix\n\n`tools/logger.py`, `open_board()` only — command line and CSV format unchanged. Left DTR/RTS asserted (`True`) instead of low, with a corrected comment. No firmware change.\n\n## Verification on the board\n\nTwo consecutive `python tools/logger.py --seconds 5 --out readings.csv` runs against the unmodified firmware appended one continuous series to one CSV:\n\n```\nt=15207 … 20207   (run 1, 26 rows)\nt=30407 … 35207   (run 2, 25 rows)\n```\n\nNo boot banner, no return to `t≈0`; a later read showed the same boot at `t=53807`, so the board ran untouched across all logger connects.\n\nI also appended the direction of the control lines (low = reset, high = safe, with the pyserial snippet) to the existing knowledge-base note `w-3e6d18276eaf`."
+}

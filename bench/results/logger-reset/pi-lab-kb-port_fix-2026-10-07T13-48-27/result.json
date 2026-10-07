@@ -1,0 +1,23 @@
+{
+  "scenario": "logger-reset",
+  "agent": "pi-lab-kb",
+  "label": "port-fix",
+  "docs": "full",
+  "model": "(default)",
+  "pass": true,
+  "detail": "the board kept running through two logger runs (t rose from 8007 to 20407 ms)",
+  "minutes": 9.2,
+  "exitCode": 0,
+  "toolCalls": 62,
+  "flashes": 1,
+  "serialCaptures": 6,
+  "ledgerCalls": 14,
+  "kbCalls": 2,
+  "boardCalls": 5,
+  "tokens": {
+    "input": 85852,
+    "output": 39594
+  },
+  "costUsd": 0.0916,
+  "finalText": "Done. Root cause found and fixed, verified on the board.\n\n## Root cause\n\n`tools/logger.py` was trying to *prevent* a reset, but did exactly the opposite:\n\n```python\n# Keep DTR and RTS low so that opening the port does not reset the ESP32.\ns.dtr = False\ns.rts = False\n```\n\nThe M5StickS3's console is the ESP32-S3 **USB Serial/JTAG** (`CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y`). Its chip-reset sequence is triggered by the **deassert (falling) transition of DTR/RTS**. pyserial's `open()` applies the stored `dtr`/`rts` attributes with an ioctl (DTR first), so setting them `False` before `open()` produces a `(1,1) → (0,1) → (0,0)` line transition — which the peripheral treats as a chip-reset request. That's why every cron run saw the board reprinting from `t≈0`.\n\nMeasured on the board / host:\n- Driver idle state for `/dev/cu.usbmodem101` is **DTR=1, RTS=1** (`TIOCMGET`), and it stays that way across open/close.\n- Raw `os.open` (no line ioctl) and pyserial with the lines left asserted: **no reset**.\n- pyserial with `dtr=False, rts=False`: **boot banner + `t=16`**, and board log shows `rst:0x15 (USB_UART_CHIP_RESET)`.\n\n## Change\n\nOnly `tools/logger.py`, `open_board()` — keep the lines in the host driver's asserted idle state instead of deasserting them:\n\n```python\ns.dtr = True\ns.rts = True\n```\n\nCommand line and CSV format are unchanged; the firmware was not touched.\n\n## Verification (firmware rebuilt/flashed unchanged)\n\n- Original logger (`git show HEAD:tools/logger.py`): CSV `t_ms` 16 → 3007 (reset on connect).\n- Fixed logger, three consecutive cron-style runs: `t_ms` 16807–19607, 23807–26807, 31007–33807 — monotonic, gaps match the sleeps, so the board keeps running across both connect and disconnect.\n\nNote: this DTR/RTS reset is also what occasionally wedges the USB port (recovered with `tools/usb_reenumerate`); that quirk disappears along with the spurious resets. I saved the lesson as a knowledge-base note (`w-e8ae7936b11d`)."
+}

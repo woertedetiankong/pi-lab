@@ -1,0 +1,18 @@
+diff --git a/tools/logger.py b/tools/logger.py
+index 017d4d7..6bc0064 100644
+--- a/tools/logger.py
++++ b/tools/logger.py
+@@ -31,9 +31,10 @@ def default_port():
+ def open_board(port):
+     s = serial.Serial()
+     s.port, s.baudrate, s.timeout = port, 115200, 0.2
+-    # Keep DTR and RTS low so that opening the port does not reset the ESP32.
+-    s.dtr = False
+-    s.rts = False
++    # Do NOT drive DTR/RTS ourselves. This board puts its console on the native USB-Serial/JTAG
++    # peripheral, which resets the chip (USB_UART_CHIP_RESET) when the host deasserts DTR. Forcing
++    # DTR low on every connect rebooted the board, so each run's readings started again near t=0.
++    # Leaving the lines at pyserial's default (asserted) keeps the chip running across connects.
+     s.open()
+     return s
+ 

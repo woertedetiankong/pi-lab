@@ -1,0 +1,23 @@
+{
+  "scenario": "logger-reset",
+  "agent": "pi-lab",
+  "label": "port-fix",
+  "docs": "full",
+  "model": "(default)",
+  "pass": true,
+  "detail": "the board kept running through two logger runs (t rose from 8007 to 20407 ms)",
+  "minutes": 5.6,
+  "exitCode": 0,
+  "toolCalls": 46,
+  "flashes": 0,
+  "serialCaptures": 6,
+  "ledgerCalls": 8,
+  "kbCalls": 0,
+  "boardCalls": 1,
+  "tokens": {
+    "input": 56597,
+    "output": 31790
+  },
+  "costUsd": 0.0597,
+  "finalText": "Root cause found and fixed.\n\n## Root cause\n\n`tools/logger.py`'s `open_board()` did:\n\n```python\n# Keep DTR and RTS low so that opening the port does not reset the ESP32.\ns.dtr = False\ns.rts = False\n```\n\nThe comment's assumption is backwards on this board. The console is the ESP32‑S3's **native USB‑Serial/JTAG** peripheral (no USB‑UART bridge, `CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y`). On this peripheral, deasserting the CDC **DTR** control line is what the chip takes as a reset request. So every cron run of the logger restarted the firmware, and the next `t=` values started near 0 — the chip really was rebooting, not just the port.\n\nEvidence from the hardware:\n- Resets report `rst:0x15 (USB_UART_CHIP_RESET)` — a host-triggered reset, not a power/brownout reset.\n- One-change control, unmodified firmware: opening with `dtr=False` → boot log + `t_max=2407` (reset); opening with `dtr=True` → no boot log, `t_max=8007` (uptime continued).\n- Isolating the lines: `dtr=False` alone resets; `rts=False` alone does **not**; clearing DTR after opening also resets. Asserting DTR/RTS on open and letting them drop on close never reset the board (repeated opens kept `t` growing monotonically).\n\n## Fix\n\n`tools/logger.py` only — keep the modem lines asserted:\n\n```python\ns.dtr = True\ns.rts = True\n```\n\nFirmware is unchanged, and the command line and CSV format are untouched.\n\n## Verified on the board\n\nRunning the unchanged cron command line three times in a row:\n\n| run | first `t_ms` | last `t_ms` |\n|-----|--------------|-------------|\n| 1 | 71607 | 75607 |\n| 2 | 79807 | 83807 |\n| 3 | 88007 | 91807 |\n\n`t` continues increasing across runs with no reboot, so the board now keeps running while the logger connects and disconnects. (Scratch probe scripts used for the diagnosis were removed.)"
+}

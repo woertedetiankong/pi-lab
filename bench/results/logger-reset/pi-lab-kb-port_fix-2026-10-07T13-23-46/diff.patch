@@ -1,0 +1,77 @@
+diff --git a/readings.csv b/readings.csv
+new file mode 100644
+index 0000000..7eda53b
+--- /dev/null
++++ b/readings.csv
+@@ -0,0 +1,52 @@
++t_ms,temp_c
++47607,28.8
++47807,28.8
++48007,28.8
++48207,28.8
++48407,28.8
++48607,28.8
++48807,28.8
++49007,28.8
++49207,28.8
++49407,28.8
++49607,28.8
++49807,28.8
++50007,28.8
++50207,28.8
++50407,28.8
++50607,28.8
++50807,28.8
++51007,28.8
++51207,28.8
++51407,28.8
++51607,28.8
++51807,28.8
++52007,28.8
++52207,28.8
++52407,28.8
++56607,28.8
++56807,28.8
++57007,28.8
++57207,28.8
++57407,28.8
++57607,28.8
++57807,28.8
++58007,28.8
++58207,28.8
++58407,28.8
++58607,28.8
++58807,28.8
++59007,28.8
++59207,28.8
++59407,28.8
++59607,28.8
++59807,28.8
++60007,28.8
++60207,28.8
++60407,28.8
++60607,28.8
++60807,28.8
++61007,28.8
++61207,28.8
++61407,28.8
++61607,28.8
+diff --git a/tools/logger.py b/tools/logger.py
+index 017d4d7..70f7df2 100644
+--- a/tools/logger.py
++++ b/tools/logger.py
+@@ -31,9 +31,11 @@ def default_port():
+ def open_board(port):
+     s = serial.Serial()
+     s.port, s.baudrate, s.timeout = port, 115200, 0.2
+-    # Keep DTR and RTS low so that opening the port does not reset the ESP32.
+-    s.dtr = False
+-    s.rts = False
++    # The board's USB-Serial/JTAG console resets the chip on a DTR falling edge, and pyserial's
++    # open() applies DTR before RTS. Clearing DTR here therefore restarts the board; asserting both
++    # lines before opening means the open produces no control-line transition.
++    s.dtr = True
++    s.rts = True
+     s.open()
+     return s
+ 

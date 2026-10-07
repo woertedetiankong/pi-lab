@@ -1,0 +1,24 @@
+{
+  "scenario": "logger-reset",
+  "agent": "pi-lab-kb-partial",
+  "docs": "full",
+  "model": "(default)",
+  "pass": true,
+  "detail": "the board kept running through two logger runs (t rose from 8007 to 20407 ms)",
+  "minutes": 3.2,
+  "exitCode": 0,
+  "toolCalls": 41,
+  "flashes": 0,
+  "serialCaptures": 7,
+  "ledgerCalls": 8,
+  "kbCalls": 2,
+  "boardCalls": 2,
+  "noteHits": 2,
+  "noteFirstMin": 0.1,
+  "tokens": {
+    "input": 75024,
+    "output": 16591
+  },
+  "costUsd": 0.0509,
+  "finalText": "## Root cause\n\nThe M5StickS3 console is the ESP32-S3's built-in **USB-Serial/JTAG** port, where `RTS high + DTR low` is the chip-reset state (exactly what esptool's `USBJTAGSerialReset` drives).\n\nWhen the OS opens `/dev/cu.usbmodem101`, it raises both lines, so the port starts at `(DTR=1, RTS=1)`. pyserial then applies pre-set values in `open()` in the order `_update_dtr_state()` **then** `_update_rts_state()`. `tools/logger.py` pre-set both `False`, so the line passed through `(DTR=0, RTS=1)` — the reset state — and reset the board on every connect. (`(DTR=1, RTS=0)` is the boot strap, which is why a wrong order can also strand the chip in download mode.)\n\n## What I changed\n\nOnly `tools/logger.py` → `open_board()`. Open with both lines already high, then lower RTS before DTR:\n\n```python\ns.dtr = True\ns.rts = True\ns.open()\ns.rts = False   # lower RTS first, so (DTR=0, RTS=1) is never entered\ns.dtr = False\n```\n\nFirmware untouched, command line and CSV format unchanged.\n\n## Verification on the board\n\n- Board at `t=98407`; old open order → first reading `t=16` (reset); new order → first reading `t=1207` (continued).\n- Exact cron command run 3×: 76 data rows, first `t=71407`, last `t=86607`, strictly increasing, no row below 1000 — no restart across consecutive runs.\n\nLedger: H1 confirmed, F2 reproduced, F3 recorded. I also appended the concrete cause/fix to the existing wiki note `M5StickS3: a host program opening the USB serial port can restart the chip` (marked unreviewed until you approve)."
+}

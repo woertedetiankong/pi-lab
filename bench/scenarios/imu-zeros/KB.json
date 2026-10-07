@@ -1,0 +1,6 @@
+{
+  "docs": ["docs-cache/BMI270-datasheet.pdf"],
+  "note": "../boards/m5sticks3/notes/m5sticks3-bmi270-init.md",
+  "partial": "notes/bmi270-config-upload-power-save.md",
+  "probes": ["INTERNAL_STATUS", "ACC_RANGE", "initialization sequence config file", "PWR_CONF adv_power_save", "BMI270 accelerometer reads all zeros"]
+}

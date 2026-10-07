@@ -1,0 +1,22 @@
+{
+  "scenario": "logger-reset",
+  "agent": "pi",
+  "docs": "full",
+  "model": "(default)",
+  "pass": true,
+  "detail": "the board kept running through two logger runs (t rose from 8007 to 20407 ms)",
+  "minutes": 3.1,
+  "exitCode": 0,
+  "toolCalls": 21,
+  "flashes": 0,
+  "serialCaptures": 6,
+  "ledgerCalls": 0,
+  "kbCalls": 0,
+  "boardCalls": 0,
+  "tokens": {
+    "input": 13688,
+    "output": 14910
+  },
+  "costUsd": 0.024,
+  "finalText": "## Root cause\n\nThe reset was caused by `tools/logger.py`, not the firmware. The board's console is the ESP32‑S3 **native USB‑Serial‑JTAG** peripheral (`CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y`). On that peripheral the DTR/RTS control lines do **not** behave like a classic USB‑UART auto‑reset circuit — driving **DTR low as the port is opened is interpreted as a reset request**. `open_board()` did exactly that:\n\n```python\ns.dtr = False\ns.rts = False\ns.open()\n```\n\nSo every cron run rebooted the chip, and `t` (ms since boot) restarted near 0. The code comment (\"Keep DTR and RTS low so that opening the port does not reset the ESP32\") encoded the wrong assumption for this console type.\n\nI verified this on the board:\n- open with `DTR=False, RTS=False` (or `DTR=False, RTS=True`) → `t` jumped back to ~16 ms (reset).\n- open with `DTR=True` (any RTS) → no reset; over repeated 5‑second open/close cycles `t` grew monotonically with no drops.\n\n## Fix\n\nIn `tools/logger.py`'s `open_board()`, I assert DTR and RTS instead of driving them low, and corrected the comment. The logger's command line, port handling, and CSV format are unchanged; the firmware was not touched.\n\n## Check on the board\n\nRan the exact cron-style command three times back-to-back (`python tools/logger.py --seconds 5 --out ...`):\n\n```\nt range: 83007 .. 101207   (76 rows)\nt-drops (resets): []\n```\n\nAll three runs continued the same uptime (~30 s span across runs) with no restart, and the CSV still has the `t_ms,temp_c` header and the same row format."
+}

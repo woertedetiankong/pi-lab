@@ -1,0 +1,37 @@
+diff --git a/tools/logger.py b/tools/logger.py
+index 017d4d7..4208c0f 100644
+--- a/tools/logger.py
++++ b/tools/logger.py
+@@ -28,12 +28,28 @@ def default_port():
+     return ports[0]
+ 
+ 
++class _BoardSerial(serial.Serial):
++    """A serial port that never drives the DTR/RTS modem control lines.
++
++    The board's console is the ESP32-S3 USB-Serial/JTAG peripheral. That peripheral
++    resets the chip into the bootloader whenever the host changes DTR/RTS (it is how
++    esptool resets it), and pyserial's open() deasserts both lines, so opening the
++    port restarts the board and every logger run reads a fresh boot.
++
++    Opening the OS device and configuring termios alone does not touch the lines, so
++    overriding these two ioctls lets the board keep running while we read.
++    """
++
++    def _update_dtr_state(self):
++        pass
++
++    def _update_rts_state(self):
++        pass
++
++
+ def open_board(port):
+-    s = serial.Serial()
++    s = _BoardSerial()
+     s.port, s.baudrate, s.timeout = port, 115200, 0.2
+-    # Keep DTR and RTS low so that opening the port does not reset the ESP32.
+-    s.dtr = False
+-    s.rts = False
+     s.open()
+     return s
+ 

@@ -1,0 +1,22 @@
+diff --git a/tools/logger.py b/tools/logger.py
+index 017d4d7..9038098 100644
+--- a/tools/logger.py
++++ b/tools/logger.py
+@@ -31,9 +31,14 @@ def default_port():
+ def open_board(port):
+     s = serial.Serial()
+     s.port, s.baudrate, s.timeout = port, 115200, 0.2
+-    # Keep DTR and RTS low so that opening the port does not reset the ESP32.
+-    s.dtr = False
+-    s.rts = False
++    # The ESP32-S3's native USB-Serial/JTAG peripheral resets the chip on the
++    # control-line state DTR=0, RTS=1. pyserial applies DTR then RTS when it
++    # opens the port, so driving them low (DTR=0,RTS=0) passes through exactly
++    # that reset state and reboots the board. Leave both lines asserted, which
++    # is the peripheral's idle state: open and close then emit no reset and the
++    # logger collects readings from a board that keeps running.
++    s.dtr = True
++    s.rts = True
+     s.open()
+     return s
+ 

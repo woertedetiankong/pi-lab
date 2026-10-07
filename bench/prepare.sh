@@ -9,21 +9,25 @@ work="$2"
 [ -d "$scenario" ] || { echo "no scenario $1" >&2; exit 1; }
 mkdir -p "$work"
 find "$work" -mindepth 1 -maxdepth 1 ! -name build -exec rm -rf {} +
-rsync -a --exclude TASK.md --exclude check.py --exclude solution.patch --exclude DOCS "$scenario/" "$work/"
+rsync -a --exclude TASK.md --exclude check.py --exclude solution.patch --exclude 'wrong-*.patch' --exclude 'alt-*.patch' --exclude DOCS --exclude KB.json --exclude AGENTS.md "$scenario/" "$work/"
 # rsync keeps the scenario files' old timestamps, which are older than a cached build of a previous variant:
 # touch them so the build always recompiles what is in the work tree.
 find "$work" -path "$work/build" -prune -o -type f -exec touch {} +
 # BENCH_MINIMAL=1: only say what the board is, as a typical project would; no serial or recovery tools.
-if [ "${BENCH_MINIMAL:-}" = 1 ]; then agents="$here/common/AGENTS.minimal.md"; else agents="$here/common/AGENTS.md"; fi
+# A scenario can describe its own environment (scenarios/<s>/AGENTS.md); it then gets no serial_capture.py either,
+# for scenarios about reading the serial port, where that script would hold the answer.
+own_agents=""; [ -f "$scenario/AGENTS.md" ] && own_agents="$scenario/AGENTS.md"
+if [ "${BENCH_MINIMAL:-}" = 1 ]; then agents="$here/common/AGENTS.minimal.md"; else agents="${own_agents:-$here/common/AGENTS.md}"; fi
 # A minimal project keeps ESP-IDF's default flashing behaviour (reset after flashing), as real projects do.
 if [ "${BENCH_MINIMAL:-}" = 1 ]; then
-  sed -i '' -e '/ESPTOOLPY_AFTER_NORESET/d' -e '/^# Leave the chip in the bootloader/d' -e '/^# M5StickS3 USB port. tools\/serial_capture.py/d' "$work/sdkconfig.defaults"
+  sed -i '' -e '/ESPTOOLPY_AFTER_NORESET/d' -e '/^# Leave the chip in the bootloader/d' -e '/^# M5StickS3 USB port\./d' "$work/sdkconfig.defaults"
 fi
 # The runner needs the recovery helper either way.
 [ -x "$here/common/bin/usb_reenumerate" ] || { mkdir -p "$here/common/bin" && clang -O2 -o "$here/common/bin/usb_reenumerate" "$here/common/usb_reenumerate.c" -framework IOKit -framework CoreFoundation 2>/dev/null; }
 if [ "${BENCH_MINIMAL:-}" != 1 ]; then
   mkdir -p "$work/tools"
-  cp "$here/common/serial_capture.py" "$here/common/bin/usb_reenumerate" "$work/tools/"
+  cp "$here/common/bin/usb_reenumerate" "$work/tools/"
+  [ -n "$own_agents" ] || cp "$here/common/serial_capture.py" "$work/tools/"
 fi
 port="${ESPPORT:-$( (ls /dev/cu.usbmodem* /dev/ttyACM* 2>/dev/null || true) | head -1)}"
 [ -n "$port" ] || { echo "no board found" >&2; exit 1; }

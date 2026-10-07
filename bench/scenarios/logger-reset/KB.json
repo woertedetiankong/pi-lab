@@ -1,0 +1,6 @@
+{
+  "docs": [],
+  "note": "../boards/m5sticks3/notes/m5sticks3-usb-serial-open-reset.md",
+  "partial": "notes/usb-serial-open-reset-partial.md",
+  "probes": ["board restarts when the serial port is opened", "pyserial DTR RTS", "rst:0x15 USB_UART_CHIP_RESET"]
+}

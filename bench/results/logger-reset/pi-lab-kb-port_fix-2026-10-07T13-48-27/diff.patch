@@ -1,0 +1,20 @@
+diff --git a/tools/logger.py b/tools/logger.py
+index 017d4d7..dfaea54 100644
+--- a/tools/logger.py
++++ b/tools/logger.py
+@@ -31,9 +31,12 @@ def default_port():
+ def open_board(port):
+     s = serial.Serial()
+     s.port, s.baudrate, s.timeout = port, 115200, 0.2
+-    # Keep DTR and RTS low so that opening the port does not reset the ESP32.
+-    s.dtr = False
+-    s.rts = False
++    # The board's console is the ESP32-S3 USB Serial/JTAG, whose chip-reset sequence is triggered by
++    # deasserting DTR/RTS (a falling edge on those control lines). The host driver leaves them asserted
++    # when idle, so keep them asserted: lowering them here resets the board on every connect, which is
++    # why each run used to start again at t close to 0. Do NOT set dtr/rts to False.
++    s.dtr = True
++    s.rts = True
+     s.open()
+     return s
+ 

@@ -1,0 +1,25 @@
+{
+  "agentError": "402: {\"message\":\"Insufficient Balance (request_id: 7ae96311-e092-4252-9572-0bcc671ecd88)\",\"type\":\"unknown_error\",\"param\":null,\"code\":\"invalid_request_error\"}",
+  "scenario": "logger-reset",
+  "agent": "pi-lab-kb-note",
+  "docs": "full",
+  "model": "(default)",
+  "pass": true,
+  "detail": "the board kept running through two logger runs (t rose from 8007 to 20407 ms)",
+  "minutes": 3.3,
+  "exitCode": 0,
+  "toolCalls": 34,
+  "flashes": 0,
+  "serialCaptures": 10,
+  "ledgerCalls": 12,
+  "kbCalls": 2,
+  "boardCalls": 4,
+  "noteHits": 2,
+  "noteFirstMin": 0.1,
+  "tokens": {
+    "input": 64016,
+    "output": 11985
+  },
+  "costUsd": 0.0394,
+  "finalText": "Odd — no output. Let me re-check the board."
+}

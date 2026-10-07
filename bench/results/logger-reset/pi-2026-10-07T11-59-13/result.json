@@ -1,0 +1,24 @@
+{
+  "agentError": "402: {\"message\":\"Insufficient Balance (request_id: 6872250b-679c-4874-8b23-0ea4f3f3edc2)\",\"type\":\"unknown_error\",\"param\":null,\"code\":\"invalid_request_error\"}",
+  "scenario": "logger-reset",
+  "agent": "pi",
+  "docs": "full",
+  "model": "(default)",
+  "pass": false,
+  "detail": "the board restarted when the logger connected: t went from 8007 ms to 16 ms",
+  "firstJudge": "the board restarted when the logger connected: t went from 8007 ms to 16 ms",
+  "minutes": 0.4,
+  "exitCode": 0,
+  "toolCalls": 6,
+  "flashes": 0,
+  "serialCaptures": 1,
+  "ledgerCalls": 0,
+  "kbCalls": 0,
+  "boardCalls": 0,
+  "tokens": {
+    "input": 35859,
+    "output": 2191
+  },
+  "costUsd": 0.0135,
+  "finalText": ""
+}

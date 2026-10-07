@@ -1,0 +1,24 @@
+{
+  "scenario": "logger-reset",
+  "agent": "pi-lab-kb-partial",
+  "docs": "full",
+  "model": "(default)",
+  "pass": true,
+  "detail": "the board kept running through two logger runs (t rose from 8007 to 20407 ms)",
+  "minutes": 5.3,
+  "exitCode": 0,
+  "toolCalls": 38,
+  "flashes": 0,
+  "serialCaptures": 5,
+  "ledgerCalls": 9,
+  "kbCalls": 3,
+  "boardCalls": 1,
+  "noteHits": 3,
+  "noteFirstMin": 0.1,
+  "tokens": {
+    "input": 21609,
+    "output": 25257
+  },
+  "costUsd": 0.0412,
+  "finalText": "## Root cause\n\n`tools/logger.py` deliberately deasserted DTR before opening the port:\n\n```python\n# Keep DTR and RTS low so that opening the port does not reset the ESP32.\ns.dtr = False\ns.rts = False\n```\n\nThat advice is for a USB-to-UART bridge. This board's console is the ESP32-S3's **built-in USB-Serial/JTAG**, where **pulling DTR low is the chip-reset command**. So every time the logger connected, the board rebooted — which is why each run's `t` started near 0.\n\nEvidence from the board (raw capture with `dtr=False`), starting at byte 0:\n\n```\nESP-ROM:esp32s3-20210327 ... rst:0x15 (USB_UART_CHIP_RESET),boot:0x2b (SPI_FAST_FLASH_BOOT)\n```\n\nI isolated the rule with the hardware:\n- `(DTR=False, RTS=False)` → reset; `(DTR=False, RTS=True)` → reset; default open then `dtr=False` → reset\n- `(DTR=True, RTS=False)`, `(DTR=True, RTS=True)`, and pyserial's default (`dtr=rts=True`) → no reset\n- Closing with DTR asserted also does not reset (t was continuous across a 3 s closed gap).\n\n## Fix\n\n`tools/logger.py`, `open_board()` — the only change (DTR kept asserted):\n\n```python\ns.dtr = True\ns.rts = False\n```\n\nFirmware untouched, logger command line and CSV format unchanged.\n\n## Verified on the board\n\nRan the real command twice with a 4 s gap: `python tools/logger.py --seconds 5 --out readings2.csv`. Result: 50 rows, `t` monotonically increasing from 72207 to 86207 with **no drops/resets** across both connects and the disconnect between them. Before the change the same test restarted `t` near 0 on each run.\n\nDebug ledger updated (F1/F2 established, H1 confirmed). I also appended the concrete pyserial fix to the existing note `w-3e6d18276eaf` (pending your review)."
+}

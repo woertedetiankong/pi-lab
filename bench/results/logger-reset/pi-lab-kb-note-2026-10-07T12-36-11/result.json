@@ -1,0 +1,24 @@
+{
+  "scenario": "logger-reset",
+  "agent": "pi-lab-kb-note",
+  "docs": "full",
+  "model": "(default)",
+  "pass": true,
+  "detail": "the board kept running through two logger runs (t rose from 8007 to 20407 ms)",
+  "minutes": 1.4,
+  "exitCode": 0,
+  "toolCalls": 19,
+  "flashes": 0,
+  "serialCaptures": 3,
+  "ledgerCalls": 6,
+  "kbCalls": 2,
+  "boardCalls": 3,
+  "noteHits": 2,
+  "noteFirstMin": 0.1,
+  "tokens": {
+    "input": 6897,
+    "output": 7758
+  },
+  "costUsd": 0.0124,
+  "finalText": "## Root cause\n\nThe reset was caused by the host-side logger, not the firmware. On the ESP32-S3's USB-Serial/JTAG port (M5StickS3), **RTS high with DTR low is the chip-reset condition**.\n\n`tools/logger.py`'s `open_board()` did exactly the wrong thing:\n\n```python\ns.dtr = False\ns.rts = False\ns.open()\n```\n\npyserial applies DTR before RTS, so lowering both before opening passes through the transient state *DTR low / RTS high* — a reset. Every cron run therefore restarted the board, which is why each CSV run began at `t≈0`. This matches the existing KB note [w-dbab45e2d45d]: opening with both already low resets, pyserial's defaults (both high) do not.\n\n## Fix\n\nIn `tools/logger.py` only (firmware untouched), `open_board()` now opens with both lines high, then lowers RTS before DTR, so the lines end low without ever passing through the reset combination:\n\n```python\ns.dtr = True\ns.rts = True\ns.open()\ns.rts = False\ns.dtr = False\n```\n\nThe command line, CSV format, and firmware are unchanged.\n\n## Verification on the board\n\n- **Before** (unmodified logger, board already at `t≈24 s`): first CSV row was `t_ms=16` — confirmed restart.\n- **After**: three separate logger connections appended a continuous, monotonically increasing `t_ms` (28407→30407, 31607→33407, 34807→36607), and a follow-up read showed `t=44807…47607` with no boot banner. The board ran throughout; connect/disconnect no longer resets it."
+}

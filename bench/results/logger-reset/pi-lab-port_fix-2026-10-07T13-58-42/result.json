@@ -1,0 +1,23 @@
+{
+  "scenario": "logger-reset",
+  "agent": "pi-lab",
+  "label": "port-fix",
+  "docs": "full",
+  "model": "(default)",
+  "pass": true,
+  "detail": "the board kept running through two logger runs (t rose from 8007 to 20607 ms)",
+  "minutes": 3.7,
+  "exitCode": 0,
+  "toolCalls": 35,
+  "flashes": 0,
+  "serialCaptures": 4,
+  "ledgerCalls": 6,
+  "kbCalls": 0,
+  "boardCalls": 3,
+  "tokens": {
+    "input": 66580,
+    "output": 17769
+  },
+  "costUsd": 0.0491,
+  "finalText": "Done. Only `tools/logger.py` changed; the firmware was left untouched.\n\n## Root cause\n\nThe M5StickS3 prints over the ESP32‑S3's **native USB‑Serial/JTAG** console. On that peripheral, the line state **DTR=0 / RTS=1 resets the chip** (the same signal esptool uses for a hard reset). The host OS raises both DTR and RTS when the port is opened, and pyserial's `open()` applies them in the order **DTR first, then RTS**.\n\n`logger.py` tried to stay non-intrusive by doing:\n\n```python\ns.dtr = False\ns.rts = False\ns.open()\n```\n\nBecause the OS raises both lines on open, pyserial then lowered **DTR while RTS was still high** — passing straight through the reset state — so every logger run rebooted the board and `t` went back to ~0. The comment (\"Keep DTR and RTS low so that opening the port does not reset the ESP32\") was the wrong assumption.\n\n## Fix (`tools/logger.py`, `open_board`)\n\nOpen with both lines high so no transition happens, then lower **RTS before DTR**, which never passes through the reset state:\n\n```python\ns.dtr = True\ns.rts = True\ns.open()\ns.rts = False\ns.dtr = False\n```\n\nCommand line and CSV format are unchanged.\n\n## Verification on hardware\n\n- A paired A/B on the running board: baseline `t=36407`; the old open sequence → next reading `t=16` (reboot); the new sequence → `t=1407` continuing, then `2607→3407`.\n- Three consecutive cron-style runs (`python tools/logger.py --seconds 5 --out readings.csv`) appended one continuous series, `t=15807 → 31007`, with no drop, one header, same `t_ms,temp_c` format.\n\nFirmware profile confirmed unchanged: `app_init: Project name: temp_logger`, booted from flash; no rebuild/flash was needed. Ledger: F1 verified, H1 confirmed."
+}

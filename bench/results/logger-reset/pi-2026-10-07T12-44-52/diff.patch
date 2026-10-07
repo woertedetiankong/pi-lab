@@ -1,0 +1,21 @@
+diff --git a/tools/logger.py b/tools/logger.py
+index 017d4d7..06c3924 100644
+--- a/tools/logger.py
++++ b/tools/logger.py
+@@ -31,9 +31,13 @@ def default_port():
+ def open_board(port):
+     s = serial.Serial()
+     s.port, s.baudrate, s.timeout = port, 115200, 0.2
+-    # Keep DTR and RTS low so that opening the port does not reset the ESP32.
+-    s.dtr = False
+-    s.rts = False
++    # The ESP32-S3 USB Serial/JTAG peripheral resets the chip on a falling
++    # edge of DTR while RTS is asserted (the exact sequence esptool's
++    # USBJTAGSerialReset uses to enter the download bootloader). Asserting DTR
++    # and RTS and leaving them asserted for the whole session never generates
++    # that edge, so opening/closing the port does not disturb the running app.
++    s.dtr = True
++    s.rts = True
+     s.open()
+     return s
+ 

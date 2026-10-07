@@ -1,0 +1,22 @@
+{
+  "scenario": "logger-reset",
+  "agent": "pi-lab-kb",
+  "docs": "full",
+  "model": "(default)",
+  "pass": true,
+  "detail": "the board kept running through two logger runs (t rose from 8007 to 20607 ms)",
+  "minutes": 8.5,
+  "exitCode": 0,
+  "toolCalls": 71,
+  "flashes": 0,
+  "serialCaptures": 7,
+  "ledgerCalls": 8,
+  "kbCalls": 2,
+  "boardCalls": 6,
+  "tokens": {
+    "input": 96223,
+    "output": 44952
+  },
+  "costUsd": 0.1091,
+  "finalText": "Done. Only `tools/logger.py` changed; the firmware is untouched.\n\n## Root cause\n\nThe board's console is the ESP32‑S3 **USB‑Serial/JTAG** peripheral (`CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y`). That peripheral resets the chip into the bootloader when the host changes the **DTR/RTS** modem control lines — that is exactly how esptool resets it.\n\n`serial.Serial.open()` always applies those lines: after `os.open()` + `tcsetattr()` it calls `_update_dtr_state()` and `_update_rts_state()` (`serialposix.py`), which issue `TIOCMBIC`/`TIOCMBIS` ioctls. The existing `s.dtr = False; s.rts = False` before `open()` only sets `_dtr_state`/`_rts_state`; pyserial still drives the lines during `open()`. On macOS the port comes up with DTR asserted, so clearing DTR produces the reset transition. Observed: `rst:0x15 (USB_UART_CHIP_RESET)` and a full boot, so each logger run reconnected to a fresh boot at `t≈0`.\n\nIsolation testing on the hardware: a raw `os.open`/read does **not** reset; suppressing both ioctls does **not** reset; clearing DTR alone **does** reset — so it is the DTR ioctl, not RTS or `tcsetattr`.\n\n## What I changed\n\n`tools/logger.py` now opens the port with a subclass that neutralises those two ioctls, so the logger never drives DTR/RTS while still configuring termios normally:\n\n```python\nclass _BoardSerial(serial.Serial):\n    def _update_dtr_state(self):\n        pass\n    def _update_rts_state(self):\n        pass\n```\n\n`open_board()` uses `_BoardSerial()` and no longer relies on the ineffective pre-open `dtr`/`rts` assignments. Command line and CSV format are unchanged.\n\n## Verified on the board\n\nFrom a fresh reset, four consecutive `python tools/logger.py --seconds 5` runs over the same boot logged `t` ranges `20607–25607`, `28807–33807`, `52007–57007`, `57207–62207` ms — each continuing from the previous one, none near 0, with no `temperature logger started`/`rst:0x` line in between. The board stays running across connects and disconnects. (Recorded in the debug ledger as F1/F2, H1 confirmed, and saved as a knowledge‑base note.)"
+}

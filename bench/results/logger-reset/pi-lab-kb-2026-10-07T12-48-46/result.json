@@ -1,0 +1,22 @@
+{
+  "scenario": "logger-reset",
+  "agent": "pi-lab-kb",
+  "docs": "full",
+  "model": "(default)",
+  "pass": true,
+  "detail": "the board kept running through two logger runs (t rose from 8007 to 20407 ms)",
+  "minutes": 4.6,
+  "exitCode": 0,
+  "toolCalls": 46,
+  "flashes": 0,
+  "serialCaptures": 4,
+  "ledgerCalls": 8,
+  "kbCalls": 2,
+  "boardCalls": 3,
+  "tokens": {
+    "input": 72493,
+    "output": 27425
+  },
+  "costUsd": 0.0646,
+  "finalText": "Done. Here's what I found and fixed.\n\n## Root cause\n\nThe board's console is the ESP32-S3 **USB-Serial/JTAG** port, where the host modem lines double as the reset/boot straps: **RTS high with DTR low is a chip reset** (and DTR high with RTS low pulls the boot strap).\n\nmacOS raises **both** DTR and RTS when the port is opened. `open_board()` in `tools/logger.py` set `s.dtr = False; s.rts = False` *before* `s.open()`, but those setter calls only store the values. Inside `open()`, pyserial applies them in the order **DTR first, then RTS**, so the lines go `(1,1) → (0,1) → (0,0)`. The middle state, `RTS high / DTR low`, is exactly the reset condition: the chip resets, then boots normally again. Hence the board restarted on every logger connect and `t` began near 0.\n\nDirect evidence: on an already-open fd, driving DTR low while RTS stayed high produced `rst:0x15 (USB_UART_CHIP_RESET)`. An A/B test — old open sequence vs. fixed — gave, for the old one, `first_t='t=16'` plus boot lines `rst:0x15 (USB_UART_CHIP_RESET)` / `temperature logger started` every time.\n\n## Change\n\nOnly `tools/logger.py`, `open_board()`: open with **both lines high, then lower RTS before DTR**, so the open never passes through the reset state.\n\n```python\ns.dtr = True\ns.rts = True\ns.open()\ns.rts = False   # RTS first: no reset\ns.dtr = False\n```\n\nThe firmware (`main/`) is untouched, and the logger's command line and CSV format are unchanged.\n\n## Verification on the board\n\n- Old sequence, repeated: board reset every connect (`t=16`, `rst:0x15` boot lines).\n- Fixed sequence: 4 consecutive `python tools/logger.py --seconds 5 --out /tmp/fixed.csv` runs appended 102 rows with `t` strictly monotonic (12007 → 36807 ms) and **zero drops**; A/B `new` opens showed continuous `t` and no boot lines. The board is still running the unchanged firmware (app `5095fdd`).\n\nI also saved the lesson to the knowledge base as an unreviewed wiki note (`w-7e0303474dab`)."
+}

@@ -1,0 +1,22 @@
+{
+  "scenario": "logger-reset",
+  "agent": "pi-lab-kb",
+  "docs": "full",
+  "model": "(default)",
+  "pass": true,
+  "detail": "the board kept running through two logger runs (t rose from 8007 to 20407 ms)",
+  "minutes": 6.9,
+  "exitCode": 0,
+  "toolCalls": 42,
+  "flashes": 0,
+  "serialCaptures": 8,
+  "ledgerCalls": 7,
+  "kbCalls": 1,
+  "boardCalls": 6,
+  "tokens": {
+    "input": 58327,
+    "output": 27928
+  },
+  "costUsd": 0.0554,
+  "finalText": "## Root cause\n\n`tools/logger.py` was resetting the board on every connect. Its `open_board()` did:\n\n```python\n# Keep DTR and RTS low so that opening the port does not reset the ESP32.\ns.dtr = False\ns.rts = False\ns.open()\n```\n\nThis board's console is on the ESP32‑S3 **native USB‑Serial/JTAG** peripheral (`CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y`). Deasserting DTR (`dtr=False`) drives that peripheral to reset the chip — the boot log shows `rst:0x15 (USB_UART_CHIP_RESET)`. So every cron run rebooted the board, and the fresh boot's readings started at `t` near 0. The comment was backwards: the \"keep DTR/RTS low\" advice applies to classic USB‑UART auto-reset boards, not to native USB-Serial/JTAG.\n\nEvidence (measured on `/dev/cu.usbmodem101`, pyserial 3.5):\n- open with `dtr=False` (or `dtr=False, rts=False`, before or after open) → reboot banner and `t=16`, 3/3 runs\n- `rts=False` alone → no reboot\n- leave DTR/RTS at pyserial's defaults (asserted) → no reboot; `t` continued `39407 → 50007 → 60607` across connects\n\n## What I changed\n\nOnly `tools/logger.py`: removed the `s.dtr = False` / `s.rts = False` lines so the port opens at pyserial's defaults, with a comment explaining why.\n\n```python\ndef open_board(port):\n    s = serial.Serial()\n    s.port, s.baudrate, s.timeout = port, 115200, 0.2\n    # Do NOT drive DTR/RTS ourselves. ... deasserting DTR resets the chip ...\n    s.open()\n    return s\n```\n\nThe firmware in `main/` is untouched, and the command line and CSV format are unchanged.\n\n## Verification on the board\n\nThree consecutive `python tools/logger.py --seconds 3 --out /tmp/fix_runs.csv` runs (cron-style, nothing else touching the port) appended 45 rows with `t` strictly increasing **28807 → 57807**, no boot banner, no `t < 3000`, no reset.\n\nI also saved a knowledge-base note (`w-80effc40608b`) about this ESP32-S3 DTR/reset gotcha."
+}

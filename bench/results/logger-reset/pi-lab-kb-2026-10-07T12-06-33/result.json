@@ -1,0 +1,24 @@
+{
+  "agentError": "402: {\"message\":\"Insufficient Balance (request_id: 1bb62d4f-f959-4cf1-952e-318988c0489f)\",\"type\":\"unknown_error\",\"param\":null,\"code\":\"invalid_request_error\"}",
+  "scenario": "logger-reset",
+  "agent": "pi-lab-kb",
+  "docs": "full",
+  "model": "(default)",
+  "pass": false,
+  "detail": "the board restarted when the logger connected: t went from 8007 ms to 16 ms",
+  "firstJudge": "the firmware prints no readings after a reset",
+  "minutes": 0,
+  "exitCode": 0,
+  "toolCalls": 0,
+  "flashes": 0,
+  "serialCaptures": 0,
+  "ledgerCalls": 0,
+  "kbCalls": 0,
+  "boardCalls": 0,
+  "tokens": {
+    "input": 0,
+    "output": 0
+  },
+  "costUsd": 0,
+  "finalText": ""
+}

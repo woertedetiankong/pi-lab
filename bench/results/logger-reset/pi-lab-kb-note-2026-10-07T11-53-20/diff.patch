@@ -1,0 +1,24 @@
+diff --git a/tools/__pycache__/logger.cpython-314.pyc b/tools/__pycache__/logger.cpython-314.pyc
+new file mode 100644
+index 0000000..8af8ff0
+Binary files /dev/null and b/tools/__pycache__/logger.cpython-314.pyc differ
+diff --git a/tools/logger.py b/tools/logger.py
+index 017d4d7..214b928 100644
+--- a/tools/logger.py
++++ b/tools/logger.py
+@@ -31,9 +31,12 @@ def default_port():
+ def open_board(port):
+     s = serial.Serial()
+     s.port, s.baudrate, s.timeout = port, 115200, 0.2
+-    # Keep DTR and RTS low so that opening the port does not reset the ESP32.
+-    s.dtr = False
+-    s.rts = False
++    # Keep DTR and RTS high. On the ESP32-S3's USB-Serial/JTAG port, RTS high with DTR low resets the chip,
++    # and pyserial raises DTR before RTS when it opens the port, so setting both low (the usual ESP32 advice)
++    # passes through RTS high / DTR low and reboots the board on every connect. Leaving both high lets the
++    # running firmware keep going.
++    s.dtr = True
++    s.rts = True
+     s.open()
+     return s
+ 

@@ -1,0 +1,26 @@
+{
+  "agentError": "402: {\"message\":\"Insufficient Balance (request_id: 49e7e442-b032-4c01-aab6-cddd275caf1a)\",\"type\":\"unknown_error\",\"param\":null,\"code\":\"invalid_request_error\"}",
+  "scenario": "logger-reset",
+  "agent": "pi-lab-kb-partial",
+  "docs": "full",
+  "model": "(default)",
+  "pass": false,
+  "detail": "the board restarted when the logger connected: t went from 8007 ms to 16 ms",
+  "firstJudge": "the board restarted when the logger connected: t went from 8007 ms to 16 ms",
+  "minutes": 0,
+  "exitCode": 0,
+  "toolCalls": 0,
+  "flashes": 0,
+  "serialCaptures": 0,
+  "ledgerCalls": 0,
+  "kbCalls": 0,
+  "boardCalls": 0,
+  "noteHits": 0,
+  "noteFirstMin": null,
+  "tokens": {
+    "input": 0,
+    "output": 0
+  },
+  "costUsd": 0,
+  "finalText": ""
+}

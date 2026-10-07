@@ -1,0 +1,24 @@
+{
+  "scenario": "logger-reset",
+  "agent": "pi-lab-kb-note",
+  "docs": "full",
+  "model": "(default)",
+  "pass": true,
+  "detail": "the board kept running through two logger runs (t rose from 8007 to 20407 ms)",
+  "minutes": 2.8,
+  "exitCode": 0,
+  "toolCalls": 25,
+  "flashes": 0,
+  "serialCaptures": 4,
+  "ledgerCalls": 7,
+  "kbCalls": 3,
+  "boardCalls": 3,
+  "noteHits": 3,
+  "noteFirstMin": 0,
+  "tokens": {
+    "input": 42592,
+    "output": 10093
+  },
+  "costUsd": 0.0291,
+  "finalText": "## Root cause\n\n`tools/logger.py` reset the board every time cron connected. On the ESP32‑S3's USB‑Serial/JTAG port, **RTS high with DTR low asserts chip reset**. pyserial applies DTR before RTS, and the old `open_board()` did the usual ESP32 advice:\n\n```python\ns.dtr = False\ns.rts = False\ns.open()\n```\n\nThat passes through \"RTS high, DTR low\" → the chip reboots as the port opens. The logger then reads a fresh boot, so every CSV run starts at `t≈0`. The firmware was never at fault.\n\n## Fix — `tools/logger.py` only\n\n```python\n# On the ESP32-S3's USB-Serial/JTAG port, RTS high with DTR low resets the chip. Raising both lines on\n# open and then lowering RTS before DTR avoids the \"RTS high, DTR low\" pass that a plain dtr=False,\n# rts=False before open would go through, so connecting does not disturb the running firmware.\ns.dtr = True\ns.rts = True\ns.open()\ns.rts = False\ns.dtr = False\n```\n\nCommand line, CSV format, and the firmware in `main/` are untouched (`git status`: only `tools/logger.py` modified).\n\n## Verification on the board\n\n- **Before:** with the board at `t≈22s`, two unmodified logger runs each wrote CSV rows starting at `t_ms=16` (reboot on every connect).\n- **After:** on two fresh boots, 9 consecutive fixed logger runs (4 then 5) kept `t_ms` strictly monotonic across connect/disconnect — `19607→29607`, `37007→70407` — with no backwards jump and no boot banner. Firmware app version `c2b0587` unchanged.\n\nOne caveat recorded in the ledger: right after a fresh board reset, back‑to‑back reopens with no delay twice hit `SerialException: ... device disconnected ...`; with a ~2 s gap, 5/5 runs succeeded. Cron's minutes-apart schedule is unaffected. I appended this confirmation to the existing wiki note `w-dbab45e2d45d` (pending your review)."
+}

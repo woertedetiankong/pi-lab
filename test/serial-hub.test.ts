@@ -51,6 +51,24 @@ test("the port is released when nobody needs it", async () => {
   h.stop();
 });
 
+test("with no panel watching, the port is let go as soon as a capture ends", async () => {
+  // The agent's next command may be a script that opens the port; a hub still holding it would share it.
+  const h = hub();
+  await h.capture({ seconds: 0.2, reset: false });
+  await new Promise(r => setTimeout(r, 100));
+  assert.equal(h.state, "released");
+  h.stop();
+});
+
+test("while the panel watches, the port stays open after a capture", async () => {
+  const h = hub();
+  h.viewed();
+  await h.capture({ seconds: 0.2, reset: false });
+  await new Promise(r => setTimeout(r, 100));
+  assert.equal(h.state, "open");
+  h.stop();
+});
+
 test("markers and listeners", async () => {
   const h = hub();
   const seen: string[] = [];

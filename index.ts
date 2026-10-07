@@ -17,6 +17,8 @@ const NUDGE_TYPE = "pi-lab.stale-nudge";
 const STEP_BACK_TYPE = "pi-lab.step-back";
 /** Tool calls without settling anything before the agent is asked to step back. */
 const STEP_BACK_AFTER = 30;
+/** What pyserial and the OS say when two programs have the board's port open. */
+const PORT_CONFLICT = /multiple access on port|Resource busy|could not open port|\[Errno 16\]/i;
 
 const GUIDELINES = [
   "You are debugging embedded firmware on real hardware. Keep a debug ledger with the lab_ledger tool; it is shown to you below on every turn and survives context compaction.",
@@ -160,24 +162,34 @@ export default function piLab(pi: ExtensionAPI): void {
   // A shell command that opens the board's port (a flasher, a monitor, a script) gets it: the hub lets go until the
   // command is done, so it never meets "port busy".
   const lentFor = new Map<string, (() => void)[]>();
-  const lendPort = async (toolCallId: string, toolName: string, input: Record<string, unknown>) => {
-    if (toolName !== "bash" || typeof input.command !== "string" || !usesPort(input.command)) return;
+  // Commands pi-lab did not recognize as opening the port, run while the hub had it open (the panel was watching, or
+  // a capture was running): if one then fails to read the port, the agent is told it was the hub, not the board.
+  const sharedFor = new Map<string, string[]>();
+  /** Commands that met the hub on the port once: they get it from then on. */
+  const conflicted = new Set<string>();
+  const lendPort = async (toolCallId: string, toolName: string, input: Record<string, unknown>, cwd: string) => {
+    if (toolName !== "bash" || typeof input.command !== "string") return;
+    if (!usesPort(input.command, cwd) && !conflicted.has(input.command)) {
+      const open = board_.hubs().filter(h => h.state === "open").map(h => h.port);
+      if (open.length) sharedFor.set(toolCallId, open);
+      return;
+    }
     const giveBacks = await Promise.all(board_.hubs().map(h => h.lend()));
     if (giveBacks.length) lentFor.set(toolCallId, giveBacks);
   };
 
   // Changes outside the project, and commands that permanently change a chip, need a person's yes.
   pi.on("tool_call", async (event, ctx) => {
-    if (process.env.PI_LAB_GUARD === "off") return;
     const input = event.input as Record<string, unknown>;
+    if (process.env.PI_LAB_GUARD === "off") return lendPort(event.toolCallId, event.toolName, input, ctx.cwd);
     const verdict = event.toolName === "bash" && typeof input.command === "string" ? checkCommand(input.command, ctx.cwd)
       : (event.toolName === "edit" || event.toolName === "write") && typeof input.path === "string" ? checkWrite(input.path, ctx.cwd)
       : undefined;
-    if (!verdict) return lendPort(event.toolCallId, event.toolName, input);
+    if (!verdict) return lendPort(event.toolCallId, event.toolName, input, ctx.cwd);
     if (ctx.hasUI) {
       const what = typeof input.command === "string" ? input.command : String(input.path);
       const title = verdict.hardware ? "pi-lab: irreversible chip operation" : "pi-lab: change outside the project";
-      if (await ctx.ui.confirm(title, `${verdict.reason}\n\n${what}\n\nAllow it?`)) return lendPort(event.toolCallId, event.toolName, input);
+      if (await ctx.ui.confirm(title, `${verdict.reason}\n\n${what}\n\nAllow it?`)) return lendPort(event.toolCallId, event.toolName, input, ctx.cwd);
     }
     return { block: true, reason: `pi-lab blocked this: ${verdict.reason}${ctx.hasUI ? " The user declined." : " Nobody is available to approve it."}` };
   });
@@ -198,6 +210,15 @@ export default function piLab(pi: ExtensionAPI): void {
   pi.on("tool_result", async (event, ctx) => {
     for (const giveBack of lentFor.get(event.toolCallId) ?? []) giveBack();
     lentFor.delete(event.toolCallId);
+    const shared = sharedFor.get(event.toolCallId);
+    sharedFor.delete(event.toolCallId);
+    if (shared && event.toolName === "bash") {
+      const output = event.content.map(c => (c.type === "text" ? c.text : "")).join("\n");
+      if (PORT_CONFLICT.test(output) && typeof event.input.command === "string") {
+        conflicted.add(event.input.command);
+        return { content: [...event.content, { type: "text" as const, text: `\n[pi-lab: pi-lab had ${shared.join(", ")} open (for the board panel or a capture) while this command ran, so the two shared the port. That, not the board, explains this error. Run it again: pi-lab now lets go of the port for this script.]` }] };
+      }
+    }
     if (event.toolName === "bash" && !event.isError && typeof event.input.command === "string" && isFlashCommand(event.input.command)) {
       await recordFlash(ctx, event.input.command);
       return;

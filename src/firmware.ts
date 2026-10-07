@@ -2,6 +2,9 @@
 // and any later difference means the board is running stale firmware.
 
 import { createHash } from "node:crypto";
+import { openSync, readSync, closeSync } from "node:fs";
+import { homedir } from "node:os";
+import { resolve } from "node:path";
 
 export const FLASH_ENTRY = "pi-lab.flash";
 
@@ -34,10 +37,52 @@ const FLASH_PATTERNS: RegExp[] = [
 
 export const isFlashCommand = (command: string) => FLASH_PATTERNS.some(p => p.test(command));
 
-/** Commands that open the board's serial port: flashers, monitors, scripts that talk to it. */
-export const usesPort = (command: string) =>
+/**
+ * Commands that open the board's serial port: flashers, monitors, scripts that talk to it. With `cwd`, a Python
+ * script the command runs counts too when its source opens a serial port (`python tools/logger.py` says nothing
+ * about the port on the command line).
+ */
+export const usesPort = (command: string, cwd?: string) =>
   isFlashCommand(command) ||
-  /\bidf\.py\b[^\n|;&]*\bmonitor\b|\b(?:pio|platformio)\b[^\n|;&]*device\s+monitor|\besptool|\bminiterm|\bminicom\b|\bpicocom\b|\bscreen\s+\/dev\/|\bserial\.Serial\b|\bserial_capture\b|\/dev\/(?:cu\.|tty\.|ttyACM|ttyUSB)/.test(command);
+  /\bidf\.py\b[^\n|;&]*\bmonitor\b|\b(?:pio|platformio)\b[^\n|;&]*device\s+monitor|\besptool|\bminiterm|\bminicom\b|\bpicocom\b|\bscreen\s+\/dev\/|\bserial\.Serial\b|\bimport\s+serial\b|\bfrom\s+serial\b|\bserial_capture\b|\/dev\/(?:cu\.|tty\.|ttyACM|ttyUSB)/.test(command) ||
+  (cwd !== undefined && pythonScripts(command).some(script => scriptOpensPort(script, cwd, cdTargets(command))));
+
+const OPENS_PORT = /\bimport\s+serial\b|\bfrom\s+serial\b|\bserial\.Serial\b|\/dev\/(?:cu\.|tty\.|ttyACM|ttyUSB)/;
+
+/** Scripts the command runs with Python: `python3 tools/x.py`, `python -u x.py`, `./x.py`. */
+function pythonScripts(command: string): string[] {
+  const found: string[] = [];
+  for (const m of command.matchAll(/\bpython[\d.]*\s+(?:-[^\s-]\S*\s+)*["']?([^\s"';&|]+\.py)\b/g)) found.push(m[1]!);
+  for (const m of command.matchAll(/(?:^|[\s;&|(])(\.{1,2}\/[^\s"';&|]+\.py)\b/g)) found.push(m[1]!);
+  return found;
+}
+
+/** Directories the command changes into, since a script path is relative to where it runs. */
+function cdTargets(command: string): string[] {
+  return [...command.matchAll(/\bcd\s+["']?([^\s"';&|]+)/g)].map(m => m[1]!.replace(/^~(?=\/|$)/, homedir()));
+}
+
+function scriptOpensPort(script: string, cwd: string, dirs: string[]): boolean {
+  for (const dir of [cwd, ...dirs.map(d => resolve(cwd, d))]) {
+    const head = readHead(resolve(dir, script.replace(/^~(?=\/)/, homedir())));
+    if (head !== undefined) return OPENS_PORT.test(head);
+  }
+  return false;
+}
+
+/** The first 256 KB of a file, or undefined when it cannot be read. */
+function readHead(path: string): string | undefined {
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, "r");
+    const buf = Buffer.alloc(256 * 1024);
+    return buf.toString("utf8", 0, readSync(fd, buf, 0, buf.length, 0));
+  } catch {
+    return undefined;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
 
 // Files whose change means the image on the chip no longer matches.
 const FIRMWARE_FILE = /(?:\.(?:c|h|cc|cpp|cxx|hpp|hh|s|S|asm|ld|lds|icf|sct|rs|ino|dts|dtsi|overlay|ioc|uvprojx|ewp|cmake)$|(?:^|\/)(?:CMakeLists\.txt|Kconfig[^/]*|sdkconfig[^/]*|prj\.conf|platformio\.ini|Makefile|Cargo\.toml|memory\.x|partitions[^/]*\.csv)$)/;

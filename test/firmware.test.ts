@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -78,4 +78,23 @@ test("commands that open the serial port", async () => {
   for (const c of ["idf.py -p /dev/cu.usbmodem101 flash monitor", "idf.py monitor", "pio device monitor", "python -m esptool chip-id",
     "python3 - <<'PY'\nimport serial\np = serial.Serial('/dev/cu.usbmodem101')\nPY", "cat /dev/cu.usbmodem101", "python tools/serial_capture.py --seconds 8"]) assert.ok(usesPort(c), c);
   for (const c of ["idf.py build", "ls /dev/", "grep -rn serial main/", "git status"]) assert.ok(!usesPort(c), c);
+  assert.ok(usesPort("python3 - <<'PY'\nfrom serial import Serial\nPY"));
+});
+
+test("a Python script that opens the serial port counts, though the command line does not say so", async () => {
+  const { usesPort } = await import("../src/firmware.ts");
+  const dir = mkdtempSync(join(tmpdir(), "pi-lab-scripts-"));
+  mkdirSync(join(dir, "tools"));
+  writeFileSync(join(dir, "tools", "logger.py"), "#!/usr/bin/env python3\nimport csv\nimport serial\n\ns = serial.Serial()\n");
+  writeFileSync(join(dir, "tools", "plot.py"), "import matplotlib.pyplot as plt\nplt.plot([1, 2])\n");
+  writeFileSync(join(dir, "probe.py"), "with open('/dev/cu.usbmodem101', 'rb') as f:\n    print(f.read(10))\n");
+  for (const c of ["python tools/logger.py --seconds 5 --out readings.csv", "python3 -u tools/logger.py", "./tools/logger.py",
+    "source ~/esp/export.sh >/dev/null 2>&1 && python tools/logger.py", "python probe.py"]) assert.ok(usesPort(c, dir), c);
+  // The script is found relative to a directory the command changes into.
+  assert.ok(usesPort(`cd ${dir} && python tools/logger.py`, tmpdir()));
+  for (const c of ["python tools/plot.py", "cat tools/logger.py", "python tools/missing.py", "python tools/logger.py"]) {
+    assert.ok(!usesPort(c, c === "python tools/logger.py" ? tmpdir() : dir), c);
+  }
+  // Without a directory to look in, only the command line counts.
+  assert.ok(!usesPort("python tools/logger.py"));
 });

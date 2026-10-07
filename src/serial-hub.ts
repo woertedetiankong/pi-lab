@@ -25,7 +25,7 @@ export interface HubOptions {
   port: string;
   /** Lines kept in memory. */
   keep?: number;
-  /** Release the port this long after the last viewer or capture. */
+  /** Keep the port this long after the last look from a viewer (the web panel). */
   idleMs?: number;
   /** Software unplug and replug of the board's USB device, for a port that wedged. */
   recover?: () => Promise<unknown>;
@@ -117,8 +117,17 @@ export class SerialHub {
       return await fn();
     } finally {
       this.holds--;
-      this.scheduleIdle();
+      // With no panel watching, nobody needs the port once the last capture or flash is done: let it go now. The
+      // agent's next command is often a script of its own that opens the port, and pi-lab cannot always tell from
+      // the command line; holding on would make the two share the port ("multiple access on port").
+      if (!this.needed()) void this.release().catch(() => {});
+      else this.scheduleIdle();
     }
+  }
+
+  /** A capture or flash holds the port, or a viewer looked at it recently. */
+  private needed(): boolean {
+    return this.holds > 0 || Date.now() - this.lastViewer < (this.opts.idleMs ?? 30_000);
   }
 
   async reset(): Promise<void> {
@@ -143,7 +152,7 @@ export class SerialHub {
       if (returned) return;
       returned = true;
       this.suspended--;
-      if (this.holds > 0 || Date.now() - this.lastViewer < (this.opts.idleMs ?? 30_000)) void this.acquire().catch(() => {});
+      if (this.needed()) void this.acquire().catch(() => {});
     };
   }
 
@@ -295,13 +304,12 @@ export class SerialHub {
     return true;
   }
 
-  /** Release the port once nobody has needed it for a while. */
+  /** Release the port once the panel has stopped looking at it. */
   private scheduleIdle(): void {
     clearTimeout(this.idleTimer);
     const idle = this.opts.idleMs ?? 30_000;
     this.idleTimer = setTimeout(() => {
-      const viewerGone = Date.now() - this.lastViewer >= idle;
-      if (this.holds === 0 && viewerGone) { void this.release().catch(() => {}); return; }
+      if (!this.needed()) { void this.release().catch(() => {}); return; }
       this.scheduleIdle();
     }, Math.min(idle, 5000));
     this.idleTimer.unref();

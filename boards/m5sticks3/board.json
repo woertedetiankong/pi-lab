@@ -30,7 +30,7 @@
   ],
   "buttons": "Side power button: single click powers on or resets; double click powers off; long press enters download mode (the chip then boots into the ROM loader every reset until you single-click).",
   "quirks": [
-    "Opening its USB serial port with pyserial's defaults resets the chip, and into download mode: the OS raises DTR and RTS on open. Lower RTS before DTR (board_serial does).",
+    "Opening its USB serial port resets the chip if DTR is lowered before RTS, which is what the usual 'set DTR and RTS low before opening' advice does with pyserial. Leave both lines high (pyserial's defaults), or lower RTS before DTR (board_serial does).",
     "An RTS reset right after flashing, or a firmware crash-and-reboot loop, can wedge the USB port: no output and esptool says 'No serial data received'. A USB re-enumeration recovers it (board_recover); otherwise unplug it.",
     "If every reset prints 'boot:0x1 (DOWNLOAD...)' and 'waiting for download', the side button was long-pressed: ask the user to single-click it.",
     "Console output is on the native USB-Serial/JTAG port (CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y); there is no USB-UART bridge."

@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { Type } from "typebox";
 import { compare, describeFirmware, FLASH_ENTRY, type FirmwareState, firmwareStatus, type FlashRecord, isFirmwareFile, isFlashCommand, sourceState, usesPort } from "./src/firmware.ts";
 import { findPorts, usbIds } from "./src/board.ts";
-import { BAUDS } from "./src/project-config.ts";
+import { BAUDS, readLabConfig } from "./src/project-config.ts";
 import { registerBoardTools } from "./src/board-tools.ts";
 import { BOARD_EVENT, type BoardEvent, type BoardPack, candidates, describePack, docsDir, ensureDocs, loadPacks, notePaths, projectBoard, setProjectBoard } from "./src/boards.ts";
 import { foldLogs } from "./src/fold.ts";
@@ -12,6 +12,9 @@ import { checkCommand, checkWrite } from "./src/guard.ts";
 import { sharedHub } from "./src/hub.ts";
 import { LabApp } from "./src/web.ts";
 import { applyAction, emptyLedger, isEmpty, LEDGER_ENTRY, type Ledger, type LedgerAction, renderLedger } from "./src/ledger.ts";
+import { type ExperimentRecord, oneLine, settled } from "./src/experiment.ts";
+import { CAREFUL_GUIDELINES, carefulMessage, CORE_GUIDELINES, escalation, type Mode, PROCESS_ENTRY, type ProcessRecord } from "./src/process.ts";
+import { checks as runChecks } from "./src/lab-actions.ts";
 
 const NUDGE_TYPE = "pi-lab.stale-nudge";
 const STEP_BACK_TYPE = "pi-lab.step-back";
@@ -20,23 +23,16 @@ const STEP_BACK_AFTER = 30;
 /** What pyserial and the OS say when two programs have the board's port open. */
 const PORT_CONFLICT = /multiple access on port|Resource busy|could not open port|\[Errno 16\]/i;
 
-const GUIDELINES = [
-  "You are debugging embedded firmware on real hardware. Keep a debug ledger with the lab_ledger tool; it is shown to you below on every turn and survives context compaction.",
-  "- Record a fact only when the hardware showed it (serial output, a register read, a measurement), and say what showed it. A new fact is a single observation until you reproduce it from a clean build with one change and record that with verify_fact.",
-  "- When an observation contradicts what the code says should happen, assume the experiment is wrong before the hardware: rebuild from the original code with only one change and repeat it.",
-  "- Before testing an idea, add it as a hypothesis; when a test settles it, mark it ruled_out or confirmed with the evidence. Do not retest an idea the ledger already ruled out unless something relevant changed.",
-  "- Flash with board_flash and read the board with board_serial (it resets the board and captures from the first boot line). Do not run `idf.py monitor` or other serial monitors: they never exit. If the board stops answering, use board_recover.",
-  "- What you see on the board only reflects your edits after they are flashed. Check the Firmware line before drawing conclusions from board behaviour.",
-  "- Keep changes inside the project. Do not edit the SDK or toolchain (copy a component into the project to change it) and do not install packages into shared Python environments.",
-  "- Older build, flash and serial logs are shortened in your context; re-run a command if you need its full output.",
-];
-
 export default function piLab(pi: ExtensionAPI): void {
   let ledger: Ledger = emptyLedger();
   let flash: FlashRecord | undefined;
   let firmware: FirmwareState = { kind: "unknown" };
   let editedFirmware = false, nudged = false;
   let sinceProgress = 0, steppedBack = false;
+  // Light until the problem resists (see src/process.ts); the counters are for the current task.
+  let mode: Mode = "light", modeReason: string | undefined;
+  let callsThisTask = 0, flashesThisTask = 0, unsettledThisTask = false, ledgerUsedThisTask = false;
+  const PROCESS_TYPE = "pi-lab.careful";
 
   const run = (cwd: string) => (command: string, args: string[]) => pi.exec(command, args, { cwd, timeout: 10_000 });
 
@@ -49,7 +45,17 @@ export default function piLab(pi: ExtensionAPI): void {
       if (entry.customType === LEDGER_ENTRY && entry.data) ledger = entry.data as Ledger;
       if (entry.customType === FLASH_ENTRY && entry.data) flash = entry.data as FlashRecord;
     }
+    const recorded = ctx.sessionManager.getBranch().filter(e => e.type === "custom" && e.customType === PROCESS_ENTRY).at(-1);
+    const data = recorded?.type === "custom" ? recorded.data as ProcessRecord | undefined : undefined;
+    mode = data?.mode ?? "light";
+    modeReason = data?.reason;
   };
+  const setMode = (next: Mode, reason?: string) => {
+    mode = next;
+    modeReason = reason;
+    pi.appendEntry(PROCESS_ENTRY, { mode, reason } satisfies ProcessRecord);
+  };
+  const careful = () => mode === "careful" || readLabConfig(projectRoot(projectDir)).process === "careful";
 
   const refresh = async (ctx: ExtensionContext) => {
     firmware = compare(flash, await sourceState(run(ctx.cwd)).catch(() => undefined));
@@ -61,6 +67,7 @@ export default function piLab(pi: ExtensionAPI): void {
     if (!now) return false;
     flash = { at: Date.now(), command, ...now };
     pi.appendEntry(FLASH_ENTRY, flash);
+    if (command !== "(marked by user)") flashesThisTask++;
     await refresh(ctx);
     return true;
   };
@@ -114,11 +121,23 @@ export default function piLab(pi: ExtensionAPI): void {
     pi.events?.emit(BOARD_EVENT, event);
   };
 
+  // A settled experiment is a reproduced fact; one that did not settle means the problem is not simple.
+  const experimented = (_ctx: ExtensionContext, record: ExperimentRecord): string | undefined => {
+    if (!settled(record)) { unsettledThisTask = true; return undefined; }
+    const added = update({ action: "add_fact", text: `${record.spec.question} → ${oneLine(record)}`, evidence: `board_experiment ${record.id}` });
+    const fact = added.changed ? ledger.facts.at(-1) : undefined;
+    if (!fact) return undefined;
+    update({ action: "verify_fact", id: fact.id, evidence: `${record.id}: ${record.spec.repeat} runs per variant, shuffled, board reset before each, every variant consistent` });
+    return `Recorded in the debug ledger as reproduced fact ${fact.id}.`;
+  };
+
   const board_ = registerBoardTools(pi, {
     flashed: recordFlash,
+    experimented,
     downloadModeHint: () => pack?.buttons ? `The board is in download mode. ${pack.buttons}` : undefined,
     cwd: () => projectDir,
     root: () => projectRoot(projectDir),
+    boardName: () => pack?.name,
   });
 
   // The board panel on the shared pi-web page (/lab/), next to pi-kb's and pi-sessions' pages.
@@ -139,6 +158,7 @@ export default function piLab(pi: ExtensionAPI): void {
         kbShelf,
         kbInstalled: kbSeen,
       }),
+      root: () => projectRoot(ctx.cwd),
       chooseBoard: async id => {
         setProjectBoard(projectRoot(ctx.cwd), id);
         await usePack(ctx);
@@ -157,7 +177,10 @@ export default function piLab(pi: ExtensionAPI): void {
   });
   pi.on("session_tree", async (_event, ctx) => { restore(ctx); await refresh(ctx); });
 
-  pi.on("agent_start", () => { editedFirmware = false; nudged = false; sinceProgress = 0; steppedBack = false; });
+  pi.on("agent_start", () => {
+    editedFirmware = false; nudged = false; sinceProgress = 0; steppedBack = false;
+    callsThisTask = 0; flashesThisTask = 0; unsettledThisTask = false; ledgerUsedThisTask = false;
+  });
 
   // A shell command that opens the board's port (a flasher, a monitor, a script) gets it: the hub lets go until the
   // command is done, so it never meets "port busy".
@@ -197,6 +220,15 @@ export default function piLab(pi: ExtensionAPI): void {
   // Many tool calls without a new fact or a settled hypothesis: likely deep in the wrong direction.
   pi.on("turn_end", event => {
     sinceProgress += event.toolResults.length;
+    callsThisTask += event.toolResults.length;
+    // Light until the problem resists; then the ledger's rules, from this turn on.
+    if (!careful()) {
+      const reason = escalation({ toolCalls: callsThisTask, flashes: flashesThisTask, unsettled: unsettledThisTask, ledgerUsed: ledgerUsedThisTask });
+      if (reason) {
+        setMode("careful", reason);
+        return { entries: [...event.entries, { type: "custom_message", customType: PROCESS_TYPE, display: false, content: carefulMessage(reason) }] };
+      }
+    }
     if (sinceProgress < STEP_BACK_AFTER || steppedBack) return;
     steppedBack = true;
     return {
@@ -243,7 +275,15 @@ export default function piLab(pi: ExtensionAPI): void {
       : `in ${docsDir(pack)}, and verified notes in ${join(pack.dir, "notes")}`) : undefined;
     const serial = board_.serial();
     const serialLine = serial.using ? `Serial: ${serial.using} at ${serial.baud} baud (the project's setting; the user can change it in the board panel).` : "Serial: no board connected.";
-    event.systemPromptOptions.sections.pi_lab = [...GUIDELINES, "", serialLine, ...(board ? ["", board] : []), "", "Debug ledger:", state || "(empty: set the target and add what you know)"].join("\n");
+    const guidelines = careful() ? [...CORE_GUIDELINES, "", ...CAREFUL_GUIDELINES] : CORE_GUIDELINES;
+    // Light mode shows the ledger only once it holds something (a settled experiment adds to it); careful mode always.
+    const firmwareLine = describeFirmware(firmware);
+    const ledgerPart = careful() || !isEmpty(ledger)
+      ? ["", "Debug ledger:", state || "(empty: set the target and add what you know)"]
+      : firmwareLine ? ["", `Firmware: ${firmwareLine}`] : [];
+    const checkNames = (readLabConfig(projectRoot(ctx.cwd)).checks ?? []).map(c => c.name);
+    const checksLine = checkNames.length ? [`Board checks (board_check): ${checkNames.join("; ")}.`] : [];
+    event.systemPromptOptions.sections.pi_lab = [...guidelines, "", serialLine, ...checksLine, ...(board ? ["", board] : []), ...ledgerPart].join("\n");
   });
 
   // The agent changed firmware and is about to stop without flashing: whatever it concluded is untested on the board.
@@ -289,19 +329,20 @@ export default function piLab(pi: ExtensionAPI): void {
         : params.action === "add_hypothesis" ? { action: "add_hypothesis", text: need(params.text, "text"), force: params.force }
         : params.action === "update" ? { action: "update", id: need(params.id, "id"), status: params.status, evidence: params.evidence }
         : { action: "remove", id: need(params.id, "id") };
+      ledgerUsedThisTask = true;
       const result = update(act);
       return { content: [{ type: "text", text: `${result.message}\n\n${renderLedger(ledger) || "(ledger empty)"}` }], details: { ledger } };
     },
   });
 
   pi.registerCommand("lab", {
-    description: "Board panel, serial port, debug ledger, firmware sync: [web [url | stop] | serial [port | auto | baud] | show | flashed | target <text> | clear | board [id | none]]",
+    description: "Board panel, serial port, debug ledger, firmware sync, process, checks: [web [url | stop] | serial [port | auto | baud] | show | flashed | target <text> | clear | board [id | none] | careful | light | check [name]]",
     getArgumentCompletions: prefix => {
       const [first, second] = prefix.split(/\s+/);
       if (first === "board" && second !== undefined) return [...packs.map(p => p.id), "none"].filter(id => id.startsWith(second)).map(id => ({ value: `board ${id}`, label: id }));
       if (first === "web" && second !== undefined) return ["url", "stop"].filter(s => s.startsWith(second)).map(s => ({ value: `web ${s}`, label: s }));
       if (first === "serial" && second !== undefined) return [...findPorts(), "auto", ...BAUDS.map(String)].filter(s => s.startsWith(second)).map(s => ({ value: `serial ${s}`, label: s }));
-      return ["web", "serial", "show", "flashed", "target", "clear", "board"].filter(s => s.startsWith(prefix)).map(s => ({ value: s, label: s }));
+      return ["web", "serial", "show", "flashed", "target", "clear", "board", "careful", "light", "check"].filter(s => s.startsWith(prefix)).map(s => ({ value: s, label: s }));
     },
     handler: async (args, ctx) => {
       const [command = "show", ...rest] = args.trim().split(/\s+/);
@@ -346,6 +387,22 @@ export default function piLab(pi: ExtensionAPI): void {
         ctx.ui.notify(pack ? `Board for this project: ${pack.name} (saved in .pi/lab.json).` : "No board for this project.", "info");
         return;
       }
+      if (command === "careful" || command === "light") {
+        setMode(command, command === "careful" ? "chosen by the user" : undefined);
+        const forced = readLabConfig(projectRoot(ctx.cwd)).process === "careful";
+        ctx.ui.notify(command === "careful"
+          ? "Careful mode: the agent keeps the debug ledger and reproduces facts before building on them."
+          : `Light mode: no ledger bookkeeping until the problem resists${forced ? ' (but .pi/lab.json sets "process": "careful", which wins)' : ""}.`, "info");
+        return;
+      }
+      if (command === "check") {
+        const list = readLabConfig(projectRoot(ctx.cwd)).checks ?? [];
+        if (!list.length) { ctx.ui.notify("No board checks in .pi/lab.json. Ask the agent to set them up with board_check (save=true), or add \"checks\" yourself.", "info"); return; }
+        ctx.ui.notify(`Running ${rest[0] ? `"${rest.join(" ")}"` : `${list.length} board check(s)`}...`, "info");
+        const r = await runChecks(board_, { names: rest.length ? [rest.join(" ")] : undefined }, { cwd: ctx.cwd, root: projectRoot(ctx.cwd), boardName: pack?.name }).catch(e => ({ text: (e as Error).message, results: [] }));
+        ctx.ui.notify(r.text, r.results.every(x => x.pass) && r.results.length ? "info" : "warning");
+        return;
+      }
       if (command === "flashed") {
         // For flashes done outside pi: an IDE, a GUI programmer, another terminal.
         const ok = await recordFlash(ctx, "(marked by user)");
@@ -358,6 +415,7 @@ export default function piLab(pi: ExtensionAPI): void {
         if (ctx.hasUI && !(await ctx.ui.confirm("Clear the debug ledger?", "Facts and hypotheses on this branch will be cleared."))) return;
         ledger = emptyLedger();
         pi.appendEntry(LEDGER_ENTRY, ledger);
+        if (mode === "careful") setMode("light");
       }
       await refresh(ctx);
       const text = renderLedger(ledger, describeFirmware(firmware));

@@ -2,10 +2,20 @@
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import type { BoardCheck } from "./checks.ts";
+import type { LogicConfig } from "./logic.ts";
 
 export interface LabConfig {
   board?: string;
   serial?: { port?: string; baud?: number };
+  /** The project's acceptance checks (board_check). */
+  checks?: BoardCheck[];
+  /** Run the checks after every board_flash. */
+  checkAfterFlash?: boolean;
+  /** The logic analyzer (board_logic). */
+  logic?: LogicConfig;
+  /** "auto": start light and switch to the careful process (debug ledger, reproduce before building on a fact) when the problem resists; "careful": from the start. */
+  process?: "auto" | "careful";
 }
 
 const file = (root: string) => join(root, ".pi", "lab.json");

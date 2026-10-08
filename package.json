@@ -1,7 +1,7 @@
 {
   "name": "pi-lab",
-  "version": "0.3.4",
-  "description": "Embedded debugging for pi: flash and read the board reliably, keep a debug ledger that survives compaction, track firmware sync, and guard the toolchain",
+  "version": "0.4.0",
+  "description": "Embedded debugging for pi on the real board: flash and read it reliably, run controlled experiments, keep notes that re-run themselves, check fixes against acceptance criteria, and guard the toolchain; also an MCP server for other agents",
   "type": "module",
   "license": "MIT",
   "files": [

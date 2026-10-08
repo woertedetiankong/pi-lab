@@ -8,6 +8,8 @@ import { readFile as readBytes } from "node:fs/promises";
 import { basename, join } from "node:path";
 import type { BoardAccess } from "./board-tools.ts";
 import { type BoardPack, docsDir } from "./boards.ts";
+import { labSummary, lastCheck } from "./lab-actions.ts";
+import { notesDir } from "./experiment.ts";
 import { type WebApp, webError, type WebLanguage, type WebRequest } from "./hub.ts";
 import { BAUDS } from "./project-config.ts";
 import type { LogLine } from "./serial-hub.ts";
@@ -21,6 +23,8 @@ export interface PanelSession {
   boards(): Promise<{ packs: BoardPack[]; connected: string[]; current?: BoardPack; kbShelf?: string; kbInstalled: boolean }>;
   /** Choose the project's board pack (undefined: none). */
   chooseBoard(id: string | undefined): Promise<void>;
+  /** The project root: experiments, notes and the last board checks live under its .pi/lab. */
+  root(): string;
 }
 
 const PAGE = fileURLToPath(new URL("../web/lab.html", import.meta.url));
@@ -85,8 +89,22 @@ export class LabApp implements WebApp {
     }
     if (route === "GET /state") {
       const serial = this.board.serial();
+      const last = this.session && lastCheck(this.session.root());
+      const checks = last ? { passed: last.results.filter(r => r.pass).length, total: last.results.length, at: last.at } : null;
       return { port: hub?.port, baud: hub?.baud ?? serial.baud, state: hub ? (this.paused ? "paused" : hub.state) : "no-board", detail: hub?.detail,
-        serial: { chosen: serial.port ?? null, ports: serial.ports, bauds: BAUDS }, ...this.session?.status() };
+        serial: { chosen: serial.port ?? null, ports: serial.ports, bauds: BAUDS }, checks, ...this.session?.status() };
+    }
+    // Experiments, notes and the last board checks: the evidence behind what the agent says.
+    if (route === "GET /lab") {
+      if (!this.session) throw webError(503, "pi is not ready / pi 还没准备好");
+      return labSummary(this.session.root());
+    }
+    if (route === "GET /lab/note") {
+      if (!this.session) throw webError(503, "pi is not ready / pi 还没准备好");
+      const name = basename(req.query.get("file") ?? "");
+      if (!name.endsWith(".md")) throw webError(404, "No such note / 没有这篇笔记");
+      try { return { text: await readFile(join(notesDir(this.session.root()), name), "utf8") }; }
+      catch { throw webError(404, "No such note / 没有这篇笔记"); }
     }
     if (route === "POST /select") {
       const body = await req.json();

@@ -89,6 +89,7 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 #drawer .dbody { overflow: auto; padding: 14px 18px 40px; }
 .dpick { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; color: var(--muted); font-size: 13px; }
 .dpick select { flex: 1; max-width: none; }
+.dpick[hidden] { display: none; }
 #dContent h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 20px 0 8px; font-weight: 600; }
 #dContent .card { border: 1px solid var(--line); border-radius: var(--r); padding: 10px 12px; margin-bottom: 8px; font-size: 13px; }
 #dContent .card .sub { color: var(--muted); font-size: 12px; margin-top: 3px; }
@@ -97,6 +98,16 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 #dContent .src { display: inline-block; font-size: 11px; padding: 0 6px; border-radius: 999px; border: 1px solid var(--line-strong); color: var(--muted); margin-left: 6px; white-space: nowrap; }
 #dContent .src.measured { border-color: var(--ok); color: var(--ok); }
 #dContent .quirk { background: var(--warn-soft); border-radius: 8px; padding: 8px 10px; margin-bottom: 6px; font-size: 13px; }
+#dContent .verdict { font-family: var(--mono); font-size: 12px; font-weight: 600; margin-right: 6px; }
+#dContent .verdict.pass { color: var(--ok); }
+#dContent .verdict.fail { color: var(--warn); }
+#dContent .crit { font-family: var(--mono); font-size: 12px; color: var(--muted); margin: 2px 0 0 18px; overflow-wrap: anywhere; }
+#dContent table.exp { font-size: 12px; margin-top: 8px; border-collapse: collapse; }
+#dContent table.exp th, #dContent table.exp td { text-align: left; padding: 3px 14px 3px 0; border-bottom: 1px solid var(--line); }
+#dContent table.exp th { color: var(--muted); font-weight: 500; }
+#dContent .badge { display: inline-block; font-size: 11px; padding: 0 6px; border-radius: 999px; border: 1px solid var(--line-strong); color: var(--muted); margin-left: 6px; }
+#dContent .badge.ok { border-color: var(--ok); color: var(--ok); }
+#dContent .badge.warn { border-color: var(--warn); color: var(--warn); }
 #dContent .hint { color: var(--muted); font-size: 13px; line-height: 1.6; }
 #dContent a { color: var(--accent-text); }
 #dContent .doc { display: flex; justify-content: space-between; gap: 10px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
@@ -144,6 +155,7 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
   <button id="recover"></button>
   <button id="clear"></button>
   <button id="boardBtn"></button>
+  <button id="labBtn"></button>
   </div>
 </header>
 <div id="garbled"></div>
@@ -183,7 +195,11 @@ const T = {
     measured: "实测", srcNames: { m5docs: "M5Stack 文档", m5unified: "M5Unified 驱动" }, contentLang: "板卡包内容为英文。",
     portAuto: "串口：自动", portTip: "看哪个串口（拔插后名字可能会变，选「自动」最省心）", baudTip: "波特率：要和程序里设置的一致。ESP32-S3/C3 的原生 USB 不受影响", baud: n => `${n} 波特`,
     garbled: b => `收到的内容大部分是乱码：波特率（${b}）可能和程序里设置的不一致。试试：`,
-    firmware: { never: "本次会话还没烧录", synced: "固件与代码一致", stale: "⚠ 板子上的固件不是最新代码" }, window: "时间窗" },
+    firmware: { never: "本次会话还没烧录", synced: "固件与代码一致", stale: "⚠ 板子上的固件不是最新代码" }, window: "时间窗",
+    lab: "实验", labTitle: "实验与验收", lastChecks: "最近一次验收", checksMeta: (p, n) => `验收 ${p}/${n}`, noChecks: "还没有跑过验收检查。和 agent 约定好「修好」的标准后，用 board_check 保存（save=true），之后每次可以跑。",
+    experiments: "对照实验", noExperiments: "还没有实验。agent 遇到意外结果、或者有两种解释时，会用 board_experiment 做对照实验，表格会出现在这里。",
+    settled: "结论一致", unsettled: "结果不一致", variant: "变体", matched: "匹配", consistent: "一致", yes: "是", no: "否",
+    notes: "经验笔记", status: { measured: "已实测", "needs-review": "需要复核" }, ranAt: "运行于" },
   en: { title: "pi Board", brand: "Board", filter: "Filter the log…", follow: "Follow", plot: "Plot", pause: "Release port", resume: "Take port back", reset: "Reset board", recover: "Recover USB", recoverTip: "When the board stops answering: a software unplug and replug", recovered: "USB re-enumerated", clear: "Clear",
     empty: "Waiting for the board… (pi holds the serial port while this page is open; Release port lets other programs use it)", noBoard: "No board found: plug in its USB cable",
     plotEmpty: "When the log prints name=value pairs (fps=50, temp: 21.5), they are plotted here", selected: n => `${n} line${n > 1 ? "s" : ""} selected`, latest: "↓ Latest", pickTip: "Drag to select several lines, Shift-click for a range, ⌘-click to add",
@@ -196,7 +212,11 @@ const T = {
     measured: "measured", srcNames: { m5docs: "M5Stack docs", m5unified: "M5Unified driver" }, contentLang: "",
     portAuto: "Port: auto", portTip: "Which serial port to watch (names can change when you replug; auto is simplest)", baudTip: "Baud rate: must match the firmware's. Native USB on the ESP32-S3/C3 ignores it", baud: n => `${n} baud`,
     garbled: b => `Most of what arrives is unreadable: the baud rate (${b}) probably does not match the firmware's. Try:`,
-    firmware: { never: "not flashed in this session", synced: "firmware matches the code", stale: "⚠ the board runs older firmware than the code" }, window: "window" },
+    firmware: { never: "not flashed in this session", synced: "firmware matches the code", stale: "⚠ the board runs older firmware than the code" }, window: "window",
+    lab: "Experiments", labTitle: "Experiments and checks", lastChecks: "Last board checks", checksMeta: (p, n) => `checks ${p}/${n}`, noChecks: "No board checks have run yet. Agree with the agent on what \"fixed\" means and save it with board_check (save=true); then run them any time.",
+    experiments: "Experiments", noExperiments: "No experiments yet. When a result surprises the agent, or two explanations fit, it runs one with board_experiment and the table shows up here.",
+    settled: "settled", unsettled: "not settled", variant: "Variant", matched: "Matched", consistent: "Consistent", yes: "yes", no: "no",
+    notes: "Notes", status: { measured: "measured", "needs-review": "needs review" }, ranAt: "ran" },
 };
 const web = window.piWeb || { token: new URLSearchParams(location.hash.slice(1)).get("token"), lang: "zh" };
 const t = T[web.lang] || T.en;
@@ -570,8 +590,58 @@ $("dContent").addEventListener("toggle", async e => {
 $("boardSel").onchange = async e => {
   try { await api("/board", { id: e.target.value }); await loadBoard(); await status(); } catch (err) { toast(err.message); }
 };
-$("boardBtn").onclick = () => { const open = $("drawer").hidden; $("drawer").hidden = !open; $("boardBtn").classList.toggle("on", open); if (open) loadBoard(); };
-$("dClose").onclick = () => { $("drawer").hidden = true; $("boardBtn").classList.remove("on"); };
+// The drawer shows either the board pack or the experiments and checks.
+let drawerMode = null;
+function openDrawer(mode) {
+  const closing = !$("drawer").hidden && drawerMode === mode;
+  $("drawer").hidden = closing;
+  drawerMode = closing ? null : mode;
+  $("boardBtn").classList.toggle("on", drawerMode === "board");
+  $("labBtn").classList.toggle("on", drawerMode === "lab");
+  document.querySelector("#drawer .dpick").hidden = drawerMode !== "board";
+  $("dTitle").textContent = drawerMode === "lab" ? t.labTitle : t.boardTitle;
+  if (drawerMode === "board") loadBoard();
+  if (drawerMode === "lab") loadLab();
+}
+$("boardBtn").onclick = () => openDrawer("board");
+$("labBtn").onclick = () => openDrawer("lab");
+$("dClose").onclick = () => { $("drawer").hidden = true; drawerMode = null; $("boardBtn").classList.remove("on"); $("labBtn").classList.remove("on"); };
+
+// ---- experiments and checks drawer ----
+$("labBtn").textContent = t.lab;
+async function loadLab() {
+  let lab;
+  try { lab = await api("/lab"); } catch (err) { $("dContent").innerHTML = `<p class="hint">${esc(err.message)}</p>`; return; }
+  const html = [`<h3>${t.lastChecks}</h3>`];
+  if (!lab.checks) html.push(`<p class="hint">${esc(t.noChecks)}</p>`);
+  else {
+    const mark = p => p === null ? `<span class="verdict">[----]</span>` : p ? `<span class="verdict pass">[PASS]</span>` : `<span class="verdict fail">[FAIL]</span>`;
+    html.push(`<div class="card"><div class="sub">${t.ranAt} ${esc(new Date(lab.checks.at).toLocaleString())} · ${esc(lab.checks.port)}</div>` +
+      lab.checks.results.map(r => `<div style="margin-top:8px">${mark(r.pass)}${esc(r.name)}${r.details.filter(d => !d.startsWith("PASS")).map(d => `<div class="crit">${esc(d)}</div>`).join("")}</div>`).join("") + `</div>`);
+  }
+  html.push(`<h3>${t.experiments}</h3>`);
+  if (!lab.experiments.length) html.push(`<p class="hint">${esc(t.noExperiments)}</p>`);
+  for (const e of lab.experiments) {
+    const rows = e.rows.map(r => `<tr><td>${esc(r.name)}</td><td class="mono">${r.matched}/${r.judged}${r.runs > r.judged ? ` (+${r.runs - r.judged})` : ""}</td><td>${r.consistent ? t.yes : t.no}</td></tr>`).join("");
+    html.push(`<div class="card"><b>${esc(e.id)}</b> ${esc(e.question)}<span class="badge ${e.settled ? "ok" : "warn"}">${e.settled ? t.settled : t.unsettled}</span>` +
+      `<div class="sub">${t.ranAt} ${esc(new Date(e.at).toLocaleString())}${e.env.board ? ` · ${esc(e.env.board)}` : ""} · <span class="mono">/${esc(e.measure)}/</span></div>` +
+      `<table class="exp"><tr><th>${t.variant}</th><th>${t.matched}</th><th>${t.consistent}</th></tr>${rows}</table></div>`);
+  }
+  if (lab.notes.length) {
+    html.push(`<h3>${t.notes}</h3>`);
+    for (const n of lab.notes) {
+      const st = t.status[n.status] ?? n.status;
+      html.push(`<details data-lab-note="${esc(n.file)}"><summary>📝 ${esc(n.title)}<span class="badge ${n.status === "needs-review" ? "warn" : "ok"}">${esc(st)}</span></summary><div class="note">…</div></details>`);
+    }
+  }
+  $("dContent").innerHTML = html.join("");
+}
+$("dContent").addEventListener("toggle", async e => {
+  const d = e.target; if (!d.open || !d.dataset.labNote || d.dataset.loaded) return;
+  d.dataset.loaded = "1";
+  try { const r = await api(`/lab/note?file=${encodeURIComponent(d.dataset.labNote)}`); d.querySelector(".note").innerHTML = markdown(r.text.replace(/```pi-lab-experiment[\s\S]*?```/, "")); }
+  catch (err) { d.querySelector(".note").textContent = err.message; }
+}, true);
 
 // ---- status and controls ----
 function showState(state) {
@@ -591,8 +661,10 @@ async function status() {
     if (s.board) parts.push(s.board);
     const stale = s.firmware === "stale";
     if (t.firmware[s.firmware]) parts.push(t.firmware[s.firmware]);
+    const failing = s.checks && s.checks.passed < s.checks.total;
+    if (s.checks) parts.push(t.checksMeta(s.checks.passed, s.checks.total) + (failing ? " ✗" : " ✓"));
     $("meta").textContent = parts.join(" · ");
-    $("meta").classList.toggle("stale", stale);
+    $("meta").classList.toggle("stale", stale || !!failing);
     if (s.state === "no-board") $("empty").textContent = t.noBoard;
   } catch {}
 }

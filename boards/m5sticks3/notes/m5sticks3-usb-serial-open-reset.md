@@ -42,3 +42,46 @@ s.dtr = False; s.rts = True; time.sleep(0.2); s.rts = False   # a deliberate res
 
 **Verified** on the board: with the RTS-first order, opening the port with no reset left the running firmware alone,
 and deliberate resets booted normally (`boot:0x9 (SPI_FAST_FLASH_BOOT)`) in 90+ consecutive cycles (2026-10-01).
+
+**Run it again.** The table above comes from this experiment (re-measured 2026-10-07 with pi-lab's
+board_experiment: 3 runs per variant, shuffled, the board reset before each). On your board, have the agent run
+`board_experiment` with `rerun` set to this note's path: pi-lab runs the same variants and says whether the
+result still holds there. It needs firmware that prints `t=<ms since boot>`-style lines, such as the bench's
+logger-reset scenario; with other firmware, judge by the boot banner alone.
+
+```pi-lab-experiment
+{
+  "spec": {
+    "question": "Which ways of opening the M5StickS3's USB serial port with pyserial restart it?",
+    "variants": [
+      {
+        "name": "DTR and RTS low before open()",
+        "command": "\"$PI_LAB_PYTHON\" - low <<'PY'\nimport os, sys, time\nimport serial\nhow = sys.argv[1]\ns = serial.Serial(); s.port, s.baudrate, s.timeout = os.environ[\"PI_LAB_PORT\"], 115200, 0.1\nif how == \"low\":\n    s.dtr = False; s.rts = False; s.open()\nelif how == \"default\":\n    s.open()\nelse:\n    s.dtr = True; s.rts = True; s.open(); s.rts = False; s.dtr = False\nend, data = time.time() + 2.5, b\"\"\nwhile time.time() < end:\n    data += s.read(4096)\ns.close()\nsys.stdout.write(data.decode(\"utf-8\", \"replace\"))\nPY"
+      },
+      {
+        "name": "pyserial defaults",
+        "command": "\"$PI_LAB_PYTHON\" - default <<'PY'\nimport os, sys, time\nimport serial\nhow = sys.argv[1]\ns = serial.Serial(); s.port, s.baudrate, s.timeout = os.environ[\"PI_LAB_PORT\"], 115200, 0.1\nif how == \"low\":\n    s.dtr = False; s.rts = False; s.open()\nelif how == \"default\":\n    s.open()\nelse:\n    s.dtr = True; s.rts = True; s.open(); s.rts = False; s.dtr = False\nend, data = time.time() + 2.5, b\"\"\nwhile time.time() < end:\n    data += s.read(4096)\ns.close()\nsys.stdout.write(data.decode(\"utf-8\", \"replace\"))\nPY"
+      },
+      {
+        "name": "both high, then RTS low before DTR",
+        "command": "\"$PI_LAB_PYTHON\" - rts-first <<'PY'\nimport os, sys, time\nimport serial\nhow = sys.argv[1]\ns = serial.Serial(); s.port, s.baudrate, s.timeout = os.environ[\"PI_LAB_PORT\"], 115200, 0.1\nif how == \"low\":\n    s.dtr = False; s.rts = False; s.open()\nelif how == \"default\":\n    s.open()\nelse:\n    s.dtr = True; s.rts = True; s.open(); s.rts = False; s.dtr = False\nend, data = time.time() + 2.5, b\"\"\nwhile time.time() < end:\n    data += s.read(4096)\ns.close()\nsys.stdout.write(data.decode(\"utf-8\", \"replace\"))\nPY"
+      }
+    ],
+    "measure": {
+      "source": "output",
+      "match": "rst:0x|ESP-ROM:",
+      "value": "^t=(\\d+)"
+    },
+    "repeat": 3,
+    "reset": true,
+    "settle": 3,
+    "observe": 0,
+    "timeout": 60
+  },
+  "expected": {
+    "DTR and RTS low before open()": "yes",
+    "pyserial defaults": "no",
+    "both high, then RTS low before DTR": "no"
+  }
+}
+```

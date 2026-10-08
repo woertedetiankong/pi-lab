@@ -10,7 +10,7 @@
 
 pi-lab 是给 [pi](https://pi.dev/) 编程 agent 用的插件。除了这块共用的屏，它还给 agent 一套不会和你抢串口的板级工具，把崩溃信息翻译进日志，不让它碰你的工具链，并用一本调试账本记住长会话里试过什么。
 
-> 早期版本（v0.4.0）。目前在 ESP32-S3（M5StickS3）上实测；板级工具支持 ESP-IDF 和 PlatformIO 项目，USB 自动恢复仅支持 macOS。
+> 早期版本（v0.4.1）。目前在 ESP32-S3（M5StickS3）上实测；板级工具支持 ESP-IDF 和 PlatformIO 项目，USB 自动恢复仅支持 macOS。
 
 ## 快速开始
 
@@ -83,7 +83,7 @@ pi-lab 是你和 agent 共用的那块屏，以及它调试时的记忆。它不
    | 两根线保持高，先拉低 RTS 再拉低 DTR | 0/3 | 8207 | 是 |
 
    命令运行时独占串口，并能拿到 `PI_LAB_PORT`、`PI_LAB_BAUD` 和 `PI_LAB_PYTHON`（带 pyserial 的 Python）。每个变体每次结果都一致的表，会作为已复现的事实记入调试账本；结果不一致时，pi-lab 切换到严谨模式。
-10. **能重跑的经验笔记**（`lab_note`）：结论一致的实验可以存成 `.pi/lab/notes/` 里的笔记，格式和 pi-kb 一样。实测的表格是笔记里的事实；agent 的解释单独放、标明「未经测量」（基准测试里，没有笔记的 agent 修好了 bug，但三次里有两次把原因说错）。实验跟着笔记走：`board_experiment` 的 `rerun` 指向这条笔记，就会在另一块板子上、或者 SDK 升级之后重跑一遍，告诉你结论还成不成立；项目里的笔记不再成立时，会标成 `status: needs-review`，新表格记在「Re-runs」下面。M5StickS3 的「打开串口即复位」笔记已经带上了它的实验。
+10. **能重跑的经验笔记**（`lab_note`）：结论一致的实验可以存成 `.pi/lab/notes/` 里的笔记，格式和 pi-kb 一样。实测的表格是笔记里的事实；agent 的解释单独放、标明「未经测量」（基准测试里，没有笔记的 agent 修好了 bug，但三次里有两次把原因说错）。实验跟着笔记走：`board_experiment` 的 `rerun` 指向这条笔记，就会在另一块板子上、或者 SDK 升级之后重跑一遍，告诉你结论还成不成立；项目里的笔记不再成立时，会标成 `status: needs-review`，新表格记在「Re-runs」下面。M5StickS3 的「打开串口即复位」笔记已经带上了它的实验。装了 [pi-kb](https://github.com/woertedetiankong/pi-kb) 0.9.6 或更新版本时，项目里的笔记也会进入知识库，可以用 `kb_search` 搜到，每次重跑后同步更新；agent 也会被告知哪些笔记经重跑已经不再成立。
 11. **板级验收检查**（`board_check`、`/lab check`）：和工程师约定好的验收标准，保存在 `.pi/lab.json`：必须出现的行（`expect`）、不能出现的行（`forbid`）、观察期间不能重启（`noRestart`）、某个数值要在范围内并且持续变化（`metric`）。设置 `"checkAfterFlash": true` 后，每次 `board_flash` 之后自动跑，修没修好由它来判定：
 
    ```

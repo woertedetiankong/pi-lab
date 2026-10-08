@@ -24,7 +24,7 @@ pi-lab 是 [pi](https://pi.dev/) 编程助手的插件：让 AI 在你的真板�
 需要：Node.js 22.19 或更新版本，pi 0.87 或更新版本，以及装好的 ESP-IDF 或 PlatformIO。读写串口用的 pyserial 随 ESP-IDF 一起安装，不用另装。
 
 ```bash
-pi install git:github.com/woertedetiankong/pi-lab@v0.4.0
+pi install git:github.com/woertedetiankong/pi-lab@v0.4.1
 ```
 
 如果你平时用 Claude Code 或 Codex，而不是 pi，可以把 pi-lab 当作 MCP 服务来用。核心功能都有，但没有网页面板和调试账本：

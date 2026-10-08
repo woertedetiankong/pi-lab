@@ -314,6 +314,8 @@ export function noteMarkdown(record: ExperimentRecord, opts: { title: string; ex
     "",
     `# ${opts.title}`,
     "",
+    `**Status:** measured (${record.id}, ${record.finishedAt.slice(0, 10)}).`,
+    "",
     `**Question.** ${record.spec.question}`,
     "",
     `**Measured** (${record.finishedAt.slice(0, 10)}; ${record.spec.repeat} runs per variant in shuffled order${record.spec.reset ? ", the board reset before each" : ""}; ${env}). A run counts when ${record.spec.measure.source === "output" ? "the command's output" : `what the board printed in the ${record.spec.observe} s after the command`} matches \`${record.spec.measure.match}\`:`,
@@ -374,6 +376,11 @@ export function recordRerun(text: string, record: ExperimentRecord, result: Comp
     .replace(/^status: .*$/m, `status: ${status}`)
     .replace(/^updated: .*$/m, `updated: ${today()}`);
   if (!/^status: /m.test(out)) out = out.replace(/^---\n/, `---\nstatus: ${status}\n`);
+  // The front matter is for tools; the body line is what a reader, and pi-kb's search results, show.
+  const line = result.holds
+    ? `**Status:** measured; re-run ${today()} (${record.id}): still holds.`
+    : `**Status:** needs review: a re-run on ${today()} (${record.id}) no longer matches the table.`;
+  out = /^\*\*Status:\*\* .*$/m.test(out) ? out.replace(/^\*\*Status:\*\* .*$/m, line) : out.replace(/^(# .*\n)/m, `$1\n${line}\n`);
   const env = Object.entries(record.env).map(([k, v]) => `${k}: ${v}`).join(", ");
   const section = [
     `### ${today()}: ${result.holds ? "still holds" : "no longer matches the table above, review this note"}`,
@@ -393,6 +400,20 @@ export function recordRerun(text: string, record: ExperimentRecord, result: Comp
 
 /** Notes pi-lab wrote in this project. */
 export const notesDir = (root: string) => join(root, ".pi", "lab", "notes");
+
+/** The project's note files, for pi-kb. */
+export function noteFiles(root: string): string[] {
+  try { return readdirSync(notesDir(root)).filter(f => f.endsWith(".md")).sort().map(f => join(notesDir(root), f)); } catch { return []; }
+}
+
+/** The event pi-kb listens to: mirror these notes (pi-lab owns them and rewrites them after a re-run). */
+export const NOTES_EVENT = "pi-lab:notes";
+export interface NotesEvent {
+  /** The project's name, for the shelf. */
+  project: string;
+  root: string;
+  files: string[];
+}
 
 export function writeNote(root: string, note: { file: string; text: string }): string {
   ensureLabDir(root);

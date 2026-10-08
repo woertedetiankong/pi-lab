@@ -10,7 +10,7 @@ English · [中文](README.zh.md)
 
 pi-lab is an extension for the [pi](https://pi.dev/) coding agent. Besides the shared panel it gives the agent board tools that do not fight over the serial port, decodes crashes into the log, keeps it out of your toolchain, and keeps a debug ledger that survives a long session.
 
-> Early release (v0.4.0). Tested on an ESP32-S3 (M5StickS3) on macOS. The board tools work with ESP-IDF and PlatformIO projects; automatic USB recovery is macOS only.
+> Early release (v0.4.1). Tested on an ESP32-S3 (M5StickS3) on macOS. The board tools work with ESP-IDF and PlatformIO projects; automatic USB recovery is macOS only.
 
 ## Quick start
 
@@ -74,7 +74,7 @@ pi-lab is the screen you share with the agent, and the memory it keeps while deb
    | both high, then RTS low before DTR | 0/3 | 8207 | yes |
 
    Commands get the port to themselves and `PI_LAB_PORT`, `PI_LAB_BAUD` and `PI_LAB_PYTHON` (a Python with pyserial). A table where every variant answered the same way in every run goes into the debug ledger as a reproduced fact; one that did not turns pi-lab careful.
-10. **Notes that re-run themselves** (`lab_note`): a settled experiment becomes a note in `.pi/lab/notes/`, in pi-kb's format. The measured table is the note's facts; the agent's explanation is kept apart and marked as not measured (in the bench, agents without a note fixed the bug but named the wrong cause two times in three). The experiment travels with the note, so `board_experiment` with `rerun` set to the note runs it again, on another board or after an SDK update, and says whether it still holds; a project note that no longer holds is marked `status: needs-review` with the new table under "Re-runs". The M5StickS3's port-open note carries its experiment.
+10. **Notes that re-run themselves** (`lab_note`): a settled experiment becomes a note in `.pi/lab/notes/`, in pi-kb's format. The measured table is the note's facts; the agent's explanation is kept apart and marked as not measured (in the bench, agents without a note fixed the bug but named the wrong cause two times in three). The experiment travels with the note, so `board_experiment` with `rerun` set to the note runs it again, on another board or after an SDK update, and says whether it still holds; a project note that no longer holds is marked `status: needs-review` with the new table under "Re-runs". The M5StickS3's port-open note carries its experiment. With [pi-kb](https://github.com/woertedetiankong/pi-kb) 0.9.6 or newer, the project's notes are also in the knowledge base, found with `kb_search` and kept in step with every re-run; and the agent is told which notes a re-run put in doubt.
 11. **Board checks** (`board_check`, `/lab check`): the project's acceptance criteria, agreed with the engineer and kept in `.pi/lab.json`: lines that must appear (`expect`), must not (`forbid`), no restart while watched (`noRestart`), a number that stays in range and keeps changing (`metric`). With `"checkAfterFlash": true` they run after every `board_flash`, so a fix is judged by them:
 
    ```

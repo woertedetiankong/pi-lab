@@ -126,12 +126,19 @@ test("a note carries its experiment and its verdicts, and a re-run is compared w
   assert.ok(!diff.holds);
   assert.match(diff.lines.join("\n"), /dtr first: recorded yes, now no \(0\/2\)  ← differs/);
 
+  assert.match(note.text, /^# Lowering DTR first restarts the M5StickS3\n\n\*\*Status:\*\* measured \(E1, 2026-10-07\)\.$/m);
   const reviewed = recordRerun(note.text, changed, diff);
   assert.match(reviewed, /^status: needs-review$/m);
+  assert.match(reviewed, /^\*\*Status:\*\* needs review: a re-run on \d{4}-\d\d-\d\d \(E2\) no longer matches the table\.$/m);
+  assert.equal(reviewed.match(/^\*\*Status:\*\*/gm)!.length, 1, "the status line is replaced, not added");
   assert.match(reviewed, /## Re-runs\n\n### \d{4}-\d\d-\d\d: no longer matches/);
   assert.ok(parseNote(reviewed), "the experiment block survives");
   const again = recordRerun(reviewed, r, same);
   assert.match(again, /^status: measured$/m);
+  assert.match(again, /^\*\*Status:\*\* measured; re-run \d{4}-\d\d-\d\d \(E1\): still holds\.$/m);
+  // A note written before the status line existed gets one under its title.
+  const old = recordRerun(note.text.replace(/^\*\*Status:\*\* .*\n\n/m, ""), changed, diff);
+  assert.match(old, /^# .*\n\n\*\*Status:\*\* needs review/m);
   assert.equal(again.match(/## Re-runs/g)!.length, 1);
 });
 

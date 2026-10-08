@@ -1,6 +1,6 @@
 import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { existsSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { Type } from "typebox";
 import { compare, describeFirmware, FLASH_ENTRY, type FirmwareState, firmwareStatus, type FlashRecord, isFirmwareFile, isFlashCommand, sourceState, usesPort } from "./src/firmware.ts";
 import { findPorts, usbIds } from "./src/board.ts";
@@ -12,9 +12,9 @@ import { checkCommand, checkWrite } from "./src/guard.ts";
 import { sharedHub } from "./src/hub.ts";
 import { LabApp } from "./src/web.ts";
 import { applyAction, emptyLedger, isEmpty, LEDGER_ENTRY, type Ledger, type LedgerAction, renderLedger } from "./src/ledger.ts";
-import { type ExperimentRecord, oneLine, settled } from "./src/experiment.ts";
+import { type ExperimentRecord, NOTES_EVENT, noteFiles, type NotesEvent, oneLine, settled } from "./src/experiment.ts";
 import { CAREFUL_GUIDELINES, carefulMessage, CORE_GUIDELINES, escalation, type Mode, PROCESS_ENTRY, type ProcessRecord } from "./src/process.ts";
-import { checks as runChecks } from "./src/lab-actions.ts";
+import { labSummary, checks as runChecks } from "./src/lab-actions.ts";
 
 const NUDGE_TYPE = "pi-lab.stale-nudge";
 const STEP_BACK_TYPE = "pi-lab.step-back";
@@ -99,6 +99,15 @@ export default function piLab(pi: ExtensionAPI): void {
   // pi-kb answers with the shelf it put the board's datasheets and notes on.
   let kbSeen = false;
   pi.events?.on("pi-kb:board-shelf", data => { kbShelf = (data as { shelf?: string }).shelf; kbSeen = true; });
+  // The project's experiment notes go to pi-kb too, so kb_search finds them; it mirrors them, following every
+  // rewrite (a re-run that no longer matches marks one needs-review), and says where they went.
+  let notesShelf: string | null | undefined;
+  pi.events?.on("pi-kb:lab-notes", data => { notesShelf = (data as { shelf?: string | null }).shelf; kbSeen = true; });
+  const announceNotes = (cwd: string) => {
+    const root = projectRoot(cwd);
+    const files = noteFiles(root);
+    if (files.length) pi.events?.emit(NOTES_EVENT, { project: basename(root), root, files } satisfies NotesEvent);
+  };
 
   let projectDir = process.cwd();
   const usePack = async (ctx: ExtensionContext) => {
@@ -168,6 +177,7 @@ export default function piLab(pi: ExtensionAPI): void {
     };
     // Mounted early (the server is not started) so the other pi-web pages link here.
     web().mount(panel);
+    announceNotes(ctx.cwd);
   });
 
   pi.on("session_shutdown", async event => {
@@ -251,6 +261,7 @@ export default function piLab(pi: ExtensionAPI): void {
         return { content: [...event.content, { type: "text" as const, text: `\n[pi-lab: pi-lab had ${shared.join(", ")} open (for the board panel or a capture) while this command ran, so the two shared the port. That, not the board, explains this error. Run it again: pi-lab now lets go of the port for this script.]` }] };
       }
     }
+    if (event.toolName === "lab_note" || event.toolName === "board_experiment") announceNotes(ctx.cwd);
     if (event.toolName === "bash" && !event.isError && typeof event.input.command === "string" && isFlashCommand(event.input.command)) {
       await recordFlash(ctx, event.input.command);
       return;
@@ -283,7 +294,11 @@ export default function piLab(pi: ExtensionAPI): void {
       : firmwareLine ? ["", `Firmware: ${firmwareLine}`] : [];
     const checkNames = (readLabConfig(projectRoot(ctx.cwd)).checks ?? []).map(c => c.name);
     const checksLine = checkNames.length ? [`Board checks (board_check): ${checkNames.join("; ")}.`] : [];
-    event.systemPromptOptions.sections.pi_lab = [...guidelines, "", serialLine, ...checksLine, ...(board ? ["", board] : []), ...ledgerPart].join("\n");
+    // Experience recorded in this project: what was measured before, and which notes a later re-run put in doubt.
+    const notes = labSummary(projectRoot(ctx.cwd)).notes;
+    const doubtful = notes.filter(n => n.status === "needs-review").map(n => n.title);
+    const notesLine = notes.length ? [`Experiment notes in .pi/lab/notes/ (${notes.length}${notesShelf ? `; in the knowledge base on the shelf "${notesShelf}"` : notesShelf === null ? "; in the project's knowledge base" : ""}): measured tables from earlier experiments, re-runnable with board_experiment rerun=<note>.${doubtful.length ? ` A re-run no longer matched, so do not rely on: ${doubtful.join("; ")}.` : ""}`] : [];
+    event.systemPromptOptions.sections.pi_lab = [...guidelines, "", serialLine, ...checksLine, ...notesLine, ...(board ? ["", board] : []), ...ledgerPart].join("\n");
   });
 
   // The agent changed firmware and is about to stop without flashing: whatever it concluded is untested on the board.

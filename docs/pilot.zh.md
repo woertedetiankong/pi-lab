@@ -24,8 +24,17 @@ pi-lab 是 [pi](https://pi.dev/) 编程助手的插件：让 AI 在你的真板�
 需要：Node.js 22.19 或更新版本，pi 0.87 或更新版本，以及装好的 ESP-IDF 或 PlatformIO。读写串口用的 pyserial 随 ESP-IDF 一起安装，不用另装。
 
 ```bash
-pi install git:github.com/woertedetiankong/pi-lab@v0.4.1
+pi install git:github.com/woertedetiankong/pi-lab
+pi install git:github.com/woertedetiankong/pi-kb      # 推荐：芯片手册检索（回答带页码），实验笔记也会进入知识库
 ```
+
+装完重启 pi。试用期间我们会根据反馈经常修问题，**更新**只需要：
+
+```bash
+pi update --extensions      # 然后重启 pi
+```
+
+（不写版本号安装的是最新代码，`pi update` 会跟着更新。写了版本号，例如 `pi-lab@v0.4.1`，就会固定在那个版本，`pi update` 不再更新它。）
 
 如果你平时用 Claude Code 或 Codex，而不是 pi，可以把 pi-lab 当作 MCP 服务来用。核心功能都有，但没有网页面板和调试账本：
 
@@ -34,6 +43,8 @@ git clone https://github.com/woertedetiankong/pi-lab ~/pi-lab
 claude mcp add pi-lab -- node ~/pi-lab/src/mcp.ts      # Claude Code
 codex mcp add pi-lab -- node ~/pi-lab/src/mcp.ts       # Codex
 ```
+
+这种方式更新用 `git -C ~/pi-lab pull`，然后重启 Claude Code 或 Codex。
 
 ## 3. 第一次使用（约 20 分钟）
 
@@ -66,6 +77,12 @@ codex mcp add pi-lab -- node ~/pi-lab/src/mcp.ts       # Codex
 4. 最希望它支持什么：你的芯片、烧录方式、操作系统，还是别的？
 
 遇到问题时，请一起发给我们：
+
+- 你装的 pi-lab 是哪一版：运行下面这行，把输出发给我们（MCP 方式请把路径换成 `~/pi-lab`）；
+
+  ```bash
+  git -C ~/.pi/agent/git/github.com/woertedetiankong/pi-lab log -1 --format="%h %ad %s" --date=short
+  ```
 
 - 你的环境：芯片、板子的 USB 芯片、操作系统、ESP-IDF 或 PlatformIO 的版本；
 - 项目里的 `.pi/lab/experiments/` 文件夹（如果有）；
